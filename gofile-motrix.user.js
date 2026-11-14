@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → Motrix
 // @namespace    gofile-motrix
-// @version      0.3.0
+// @version      0.3.1
 // @description  GoFile のページにツールバーを追加し、フォルダ構造を保ったままファイルを Motrix (aria2 RPC) へ送る。gofile-dl の取得処理と gofile-enhanced の UI を土台にしたもの。
 // @author       Hoyomaru
 // @license      MIT
@@ -323,7 +323,7 @@
 
     const d = history.data();
     const failed = [];
-    check.forEach(([id], i) => {
+    check.forEach(([id, gid], i) => {
       const r = replies[i];
       const st = Array.isArray(r) ? r[0] : null; // 成功は [結果]、失敗は {code, message}
       if (!st) {
@@ -333,7 +333,7 @@
         d[id] = [d[id][0], 0, 1];
         result.set(id, 'complete');
       } else if (st.status === 'error' || (st.status === 'removed' && st.completedLength !== st.totalLength)) {
-        failed.push(id);
+        failed.push([id, gid]);
         result.set(id, 'failed');
       } else if (st.status === 'removed') {
         d[id] = [d[id][0], 0, 1];
@@ -342,9 +342,25 @@
         result.set(id, 'active');
       }
     });
-    for (const id of failed) delete d[id];
+    for (const [id] of failed) delete d[id];
     history.save();
+    if (failed.length) await removeResults(failed.map(([, gid]) => gid));
     return result;
+  }
+
+  // 失敗・取り消しのタスクを Motrix の一覧から消す。再送すると別タスクとして追加されるため、
+  // 古いほうを残すとエラーが溜まっていく。消せなくても送信は続ける。
+  async function removeResults(gids) {
+    const calls = gids.map((gid) => ({
+      methodName: 'aria2.removeDownloadResult',
+      params: [`token:${cfg.get('rpcSecret')}`, gid],
+    }));
+    try {
+      const res = await gmPost(cfg.get('rpcUrl'), { jsonrpc: '2.0', id: 'gm-clean', method: 'system.multicall', params: [calls] });
+      if (res.json?.error) throw new Error(res.json.error.message);
+    } catch (e) {
+      console.warn(LOG, 'cleanup skipped', e);
+    }
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -531,6 +547,9 @@
         // 保存先に同名ファイルが既にあれば aria2 側で file.1.ext のように別名にする
         'auto-file-renaming': 'true',
         'allow-overwrite': 'false',
+        // 一時的な通信エラーは aria2 が同じタスクの中でやり直す（送り直すと別タスクになり一覧が汚れる）
+        'max-tries': '5',
+        'retry-wait': '10',
         pause: cfg.get('autoStart') ? 'false' : 'true',
       });
       // JSON-RPC のバッチで SEND_CHUNK 件ずつ送る。一度に送るとタイムアウトしやすく、
