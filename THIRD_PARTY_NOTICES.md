@@ -6,7 +6,7 @@ This project is derived in part from the following MIT-licensed works.
 
 https://github.com/martadams89/gofile-dl
 
-Used for: the file-listing logic (recursive fetch, name sanitizing, sent-file tracking).
+Used for: extracting content IDs from GoFile URLs (`parse_content_id`). Versions up to 0.4 also ported its file-listing logic (recursive fetch, name sanitizing, sent-file tracking).
 
 ```
 MIT License

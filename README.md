@@ -1,42 +1,28 @@
-# GoFile → Motrix
+# GoFile → JD2
 
-GoFile のフォルダページにツールバーを追加して、ファイルを Motrix に送るユーザースクリプトです。サブフォルダの構造もそのまま再現します。
+GoFile のページにツールバーを追加して、GoFile の URL を JDownloader 2（JD2）へ送るユーザースクリプトです。URL のコピーも、JD2 のクリップボード監視も要りません。
 
-- ファイル一覧の取得処理（再帰取得・名前の整形・送信済みスキップ・パスワード対応）は gofile-dl を JavaScript に移植したものです。
+- URL は Click'n'Load（JD2 のローカルの受け口。初期値 `http://127.0.0.1:9666`）でリンクグラバーへ渡します。
+- フォルダの中身の取得、サブフォルダ構造の再現、パスワードの入力、重複の検出は JD2 の GoFile プラグインが行います。
 - ページ上の UI は gofile-enhanced と同じ方法で作っています（GoFile 自身のメニュー・ポップアップ・トースト通知を使います）。
-- ダウンロード自体は Motrix（aria2 RPC）に任せます。
+
+> v0.3 までは「GoFile → Motrix」（リポジトリ名 gofile-motrix）として、Motrix（aria2 RPC）へ送るスクリプトでした。v0.5 で Motrix 対応を外し、名前を変えています。古い「GoFile → Motrix」は自動では更新されないので、Tampermonkey で削除してから下の手順で入れ直してください。
 
 ## インストール
 
-1. Tampermonkey か Violentmonkey を入れた状態で、[gofile-motrix.user.js](https://raw.githubusercontent.com/Hoyomaru/gofile-motrix/main/gofile-motrix.user.js) を開いてインストールします（以降は自動で更新されます）。
-2. Motrix の「詳細設定」で RPC を確認します（ポート 16800 とシークレット）。
-3. GoFile のページでツールバーの ⚙ を開き、RPC シークレットと基準フォルダを設定します。基準フォルダを空欄にすると、Motrix の既定の保存先を使います。設定したら「接続テスト」を押してください。
+1. JDownloader 2 を入れて起動しておきます。Click'n'Load は初期設定で有効です。
+2. Tampermonkey か Violentmonkey を入れた状態で、[gofile-jd2.user.js](https://raw.githubusercontent.com/Hoyomaru/gofile-jd2/main/gofile-jd2.user.js) を開いてインストールします（以降は自動で更新されます）。
+3. GoFile のページでツールバーの ⚙ を開き、「接続テスト」を押して JD2 につながるか確認します。JD2 を別のポートや別の PC で動かしているときは、ここでアドレスを変えます。
 
 ## 使い方
 
-ツールバーの「Motrix へ送る」には、次の送り方があります。
+ツールバーの「JD2 へ送る」には、次の送り方があります。
 
-- **選択した項目**：一覧でチェックを入れたファイル・フォルダを送ります。
-- **このフォルダ全体**：表示中のページだけでなく、全ページ分を取得し直して送ります。
-- **URL を指定して…**：GoFile の URL を複数まとめて貼り付けて送ります（1 行に 1 つ。ID だけでも可）。共通のパスワードを入力できます。合わないときは個別に聞かれます。Tampermonkey のメニューからも呼べるので、フォルダページ以外でも使えます。
+- **選択した項目**：一覧でチェックを入れた項目を送ります。フォルダは `https://gofile.io/d/<コード>`、ファイルは `https://gofile.io/d/<フォルダ>#file=<ID>` の形で渡します。
+- **このフォルダ全体**：表示中のフォルダの URL を渡します。
+- **URL を指定して…**：GoFile の URL を複数まとめて貼り付けて送ります（1 行に 1 つ。ID だけでも可）。パスワードを入れた場合は一緒に渡します。Tampermonkey のメニューからも呼べるので、フォルダページ以外でも使えます。
 
-送る前に確認一覧が出ます。各ファイルには、Motrix の実際の状態に合わせたバッジが付きます。
-
-| バッジ | 意味 | 最初のチェック |
-|---|---|---|
-| 完了 | Motrix でダウンロードが完了した | 外れている |
-| Motrix で処理中 | 待機中・ダウンロード中・一時停止中 | 外れている |
-| 送信済み | 送ったが、Motrix 側に情報が残っていない（Motrix の再起動などで消えた） | 外れている |
-| 前回失敗 | Motrix で失敗した、または完了前に削除された | **付いている**（再送信の対象） |
-| 名前変更 | 同じフォルダ内の同名ファイルと重なったため ` (2)` などを付けた | — |
-
-保存先は `<基準フォルダ>/<共有フォルダ名>/<サブフォルダ…>/<ファイル名>` になります。保存先に既に同名のファイルがあるときは、Motrix 側で別名（`file.1.zip` など）にして保存します。
-
-## 送信済みの記録
-
-- Tampermonkey のストレージに、ファイル 1 件あたり約 30 バイトで保存します。
-- 記録は 1 回の操作につき 1 回だけ読み込みます。10 万件（約 3MB）でも読み込みは 0.1 秒ほどです。
-- 保持日数（既定は 7 日）を過ぎた記録は自動で消えます。設定画面で件数とサイズの確認、記録の全消去ができます。
+送ったあとは JD2 のリンクグラバーで中身を確認して、ダウンロードを開始してください。保存先やフォルダの分け方は JD2 側の設定に従います。
 
 ## 警告表示
 
@@ -45,24 +31,13 @@ GoFile 側の仕様変更などで動かなくなったときは、画面右下�
 - GoFile の内部モジュールを読み込めない
 - ページのファイル管理部分を取得できない
 
-## gofile-dl との対応
-
-| gofile-dl | このスクリプト |
-|---|---|
-| `fetch_contents`（wt トークンを自前で計算） | ページの `getFolder` を呼びます。wt はページ側が計算するので、ソルトが変わっても追従できます |
-| `execute` による再帰 | `collect` / `walk`。ページングにも対応しています |
-| `parse_content_id` | `parseContentIds`（URL 指定で送るとき） |
-| `sanitize_filename` | `sanitize`（禁止文字の置換・予約名の回避・長さの制限） |
-| `normalize_folder_name` | `normalizeFolderName`（既定パターンに加えて、独自の接頭辞を `\|` 区切りで指定できます） |
-| `strip_emojis` | 設定の「絵文字を除去」（既定はオフ） |
-| `DownloadTracker`（incremental） | 送信済みの記録（Motrix の実際の状態と突き合わせます） |
-| `download()` | Motrix へ `aria2.addUri` を送ります（Cookie・Referer・User-Agent を付けます） |
+このときも「URL を指定して送る」（Tampermonkey のメニュー）は使えます。
 
 ## ライセンスと出典
 
 MIT ライセンスです（[LICENSE](LICENSE)）。次の 2 つのプロジェクト（いずれも MIT）を元にしています。元プロジェクトの著作権表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にあります。
 
-- [gofile-dl](https://github.com/martadams89/gofile-dl)：ファイル一覧の取得・名前の整形・送信済み管理の考え方
+- [gofile-dl](https://github.com/martadams89/gofile-dl)：URL からコンテンツ ID を取り出す処理
 - [GoFile Enhanced](https://github.com/ewigl/gofile-enhanced)：GoFile のページへの UI 追加の手法
 
-GoFile・Motrix の公式ツールではありません。GoFile の利用規約を守ってお使いください。
+GoFile・JDownloader の公式ツールではありません。GoFile の利用規約を守ってお使いください。
