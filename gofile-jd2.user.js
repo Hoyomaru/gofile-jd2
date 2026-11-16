@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.6.0
+// @version      0.7.0
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -85,6 +85,7 @@
   const DEFAULT_JD_URL = 'http://127.0.0.1:9666';
   const jdUrlSetting = () => GM_getValue('cfg.jdUrl') ?? DEFAULT_JD_URL;
   const autoStartSetting = () => GM_getValue('cfg.autoStart') ?? true;
+  const dirSetting = () => String(GM_getValue('cfg.dir') ?? '').trim();
 
   // ---------------------------------------------------------------------------
   // 小物
@@ -138,9 +139,14 @@
   //   autostart=1 でリンクグラバーの確認を飛ばしてダウンロードを開始する（"1" 以外は無効扱い）。
   //   パスワードは URL と同じ行数で並べる（dpass: ダウンロード用、apass: 解凍用）。
   //   成功時の応答本文は JD2 のバージョンで異なる（空の 204 もある）ので、2xx なら成功とみなす。
+  //   source: JD2 の許可ダイアログはここ（Referer が無いとき）からサイト名を取り、一度「許可」すれば記憶する。
+  //           GM_xmlhttpRequest は Referer を送らないので、これが無いと毎回ダイアログが出る。
+  //   dir: 保存先フォルダ。空なら JD2 の既定の保存先。
   async function jdAdd(urls, password) {
-    const body = new URLSearchParams({ urls: urls.join('\n'), referer: location.href });
+    const body = new URLSearchParams({ urls: urls.join('\n'), referer: location.href, source: location.href });
     if (autoStartSetting()) body.set('autostart', '1');
+    const dir = dirSetting();
+    if (dir) body.set('dir', dir);
     if (password) {
       const lines = urls.map(() => password).join('\n');
       body.set('dpass', lines);
@@ -257,6 +263,12 @@
                      value="${escapeHtml(jdUrlSetting())}" placeholder="${DEFAULT_JD_URL}">
               <p class="mt-1 text-xs text-slate-500">JD2 の初期値は ${DEFAULT_JD_URL}</p>
             </div>
+            <div>
+              <label for="gm-dir" class="mb-1.5 block text-xs font-medium text-slate-400">保存先フォルダ</label>
+              <input id="gm-dir" name="dir" type="text" class="input" autocomplete="off"
+                     value="${escapeHtml(dirSetting())}" placeholder="例: D:\\Downloads\\GoFile">
+              <p class="mt-1 text-xs text-slate-500">空欄なら JD2 の既定の保存先。JD2 が動いている PC 上のフォルダを絶対パスで指定します</p>
+            </div>
             <label class="flex items-center gap-2 text-sm text-slate-300">
               <input name="autoStart" type="checkbox" ${autoStartSetting() ? 'checked' : ''}>
               送ったらリンクグラバーを経由せずダウンロードを開始する
@@ -272,6 +284,7 @@
               const els = document.forms[FORM_ID].elements;
               GM_setValue('cfg.jdUrl', els.jdUrl.value.trim() || DEFAULT_JD_URL);
               GM_setValue('cfg.autoStart', els.autoStart.checked);
+              GM_setValue('cfg.dir', els.dir.value.trim());
               toast('設定を保存しました', { type: 'success' });
               h.close();
             },
