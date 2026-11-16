@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.5.0
+// @version      0.6.0
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -84,6 +84,7 @@
   // ---------------------------------------------------------------------------
   const DEFAULT_JD_URL = 'http://127.0.0.1:9666';
   const jdUrlSetting = () => GM_getValue('cfg.jdUrl') ?? DEFAULT_JD_URL;
+  const autoStartSetting = () => GM_getValue('cfg.autoStart') ?? true;
 
   // ---------------------------------------------------------------------------
   // 小物
@@ -133,11 +134,20 @@
     return res.text.match(/version\s*=\s*'([^']*)'/)?.[1] ?? '';
   }
 
+  // /flash/add は autostart を受け付けないので、autostart を扱える /flashgot へ送る。
+  //   autostart=1 でリンクグラバーの確認を飛ばしてダウンロードを開始する（"1" 以外は無効扱い）。
+  //   パスワードは URL と同じ行数で並べる（dpass: ダウンロード用、apass: 解凍用）。
+  //   成功時の応答本文は JD2 のバージョンで異なる（空の 204 もある）ので、2xx なら成功とみなす。
   async function jdAdd(urls, password) {
-    const body = new URLSearchParams({ urls: urls.join('\r\n'), source: location.href, referer: location.href });
-    if (password) body.set('passwords', password);
-    const res = await gmRequest('POST', `${jdBase()}/flash/add`, body.toString());
-    if (!res.ok || !/success/i.test(res.text)) throw new Error(res.text.trim() || `HTTP ${res.status}`);
+    const body = new URLSearchParams({ urls: urls.join('\n'), referer: location.href });
+    if (autoStartSetting()) body.set('autostart', '1');
+    if (password) {
+      const lines = urls.map(() => password).join('\n');
+      body.set('dpass', lines);
+      body.set('apass', lines);
+    }
+    const res = await gmRequest('POST', `${jdBase()}/flashgot`, body.toString());
+    if (!res.ok || /^\s*failed/i.test(res.text)) throw new Error(res.text.trim() || `HTTP ${res.status}`);
   }
 
   // ---------------------------------------------------------------------------
@@ -159,7 +169,12 @@
     async function send(urls, password) {
       try {
         await jdAdd(urls, password);
-        toast(`${urls.length} 件の URL を JDownloader 2 へ送りました（リンクグラバーを確認してください）`, { type: 'success' });
+        toast(
+          autoStartSetting()
+            ? `${urls.length} 件の URL を JDownloader 2 へ送りました（自動でダウンロードを開始します）`
+            : `${urls.length} 件の URL を JDownloader 2 へ送りました（リンクグラバーを確認してください）`,
+          { type: 'success' },
+        );
       } catch (e) {
         console.error(LOG, e);
         toast(`JDownloader 2 への送信に失敗しました: ${e.message}`, { type: 'error' });
@@ -242,6 +257,10 @@
                      value="${escapeHtml(jdUrlSetting())}" placeholder="${DEFAULT_JD_URL}">
               <p class="mt-1 text-xs text-slate-500">JD2 の初期値は ${DEFAULT_JD_URL}</p>
             </div>
+            <label class="flex items-center gap-2 text-sm text-slate-300">
+              <input name="autoStart" type="checkbox" ${autoStartSetting() ? 'checked' : ''}>
+              送ったらリンクグラバーを経由せずダウンロードを開始する
+            </label>
             <button type="button" data-gm-act="test" class="w-full rounded-lg border border-sky-500 px-3 py-2 text-sky-400 hover:bg-sky-500/10">接続テスト</button>
           </form>`,
         actions: [
@@ -250,7 +269,9 @@
             label: '保存',
             variant: 'primary',
             onClick: (h) => {
-              GM_setValue('cfg.jdUrl', document.forms[FORM_ID].elements.jdUrl.value.trim() || DEFAULT_JD_URL);
+              const els = document.forms[FORM_ID].elements;
+              GM_setValue('cfg.jdUrl', els.jdUrl.value.trim() || DEFAULT_JD_URL);
+              GM_setValue('cfg.autoStart', els.autoStart.checked);
               toast('設定を保存しました', { type: 'success' });
               h.close();
             },
