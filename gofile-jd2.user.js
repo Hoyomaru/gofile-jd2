@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.7.0
+// @version      0.7.1
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -142,11 +142,16 @@
   //   source: JD2 の許可ダイアログはここ（Referer が無いとき）からサイト名を取り、一度「許可」すれば記憶する。
   //           GM_xmlhttpRequest は Referer を送らないので、これが無いと毎回ダイアログが出る。
   //   dir: 保存先フォルダ。空なら JD2 の既定の保存先。
+  //        JD2 は dir をパッケージの保存先としてそのまま上書きする（パッケージャーの後に適用され、
+  //        「フォルダ構成を受継ぐ」などのサブフォルダ分けが消える）。そこで末尾に <jd:packagename> を付け、
+  //        GoFile のフォルダ名（＝パッケージ名）のフォルダに入るようにする。この変数は保存先を決めるときに
+  //        JD2 が展開する。<jd:subfolderbyplugin> はその時点では展開されないので使えない。
+  //        利用者が自分で <jd:…> を書いたときはそのまま渡す。
   async function jdAdd(urls, password) {
     const body = new URLSearchParams({ urls: urls.join('\n'), referer: location.href, source: location.href });
     if (autoStartSetting()) body.set('autostart', '1');
     const dir = dirSetting();
-    if (dir) body.set('dir', dir);
+    if (dir) body.set('dir', /<jd:/i.test(dir) ? dir : `${dir.replace(/[\\/]+$/, '')}\\<jd:packagename>`);
     if (password) {
       const lines = urls.map(() => password).join('\n');
       body.set('dpass', lines);
@@ -267,7 +272,7 @@
               <label for="gm-dir" class="mb-1.5 block text-xs font-medium text-slate-400">保存先フォルダ</label>
               <input id="gm-dir" name="dir" type="text" class="input" autocomplete="off"
                      value="${escapeHtml(dirSetting())}" placeholder="例: D:\\Downloads\\GoFile">
-              <p class="mt-1 text-xs text-slate-500">空欄なら JD2 の既定の保存先。JD2 が動いている PC 上のフォルダを絶対パスで指定します</p>
+              <p class="mt-1 text-xs text-slate-500">空欄なら JD2 の既定の保存先。JD2 が動いている PC 上のフォルダを絶対パスで指定します。中には GoFile のフォルダ名ごとにフォルダを作ります</p>
             </div>
             <label class="flex items-center gap-2 text-sm text-slate-300">
               <input name="autoStart" type="checkbox" ${autoStartSetting() ? 'checked' : ''}>
