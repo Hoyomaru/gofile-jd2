@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.8.0
+// @version      0.8.1
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -48,6 +48,68 @@
     },
     configurable: true,
   });
+
+  // ---------------------------------------------------------------------------
+  // GoFile のページ状態の読み取り
+  //   FileManager（fm）の内部プロパティと GoFile の DOM を読むのはここだけにする。
+  //   GoFile の仕様変更で壊れたときは、まずここを直す。
+  // ---------------------------------------------------------------------------
+  const gofileUrl = (code) => `https://gofile.io/d/${code}`;
+
+  const gofile = {
+    // ツールバーを置けるかどうかと、置けないときの理由。
+    //   problem は GoFile の仕様変更が疑われる理由だけ。読み込み中・パスワード入力待ちなど
+    //   正常に起こりうる「まだ置けない」状態では null にして、警告を出さない。
+    barState() {
+      if (!fm) return { ready: false, problem: 'FileManager を捕捉できない' };
+      const st = fm.state;
+      if (!st || !('status' in st)) return { ready: false, problem: 'FileManager に state.status がない' };
+      if (fm.destroyed || st.status !== 'ready' || !fm.root?.isConnected) return { ready: false, problem: null };
+      const fileView = !!st.fileView;
+      const selector = fileView ? '#fm-root' : '#fm-toolbar';
+      const target = document.querySelector(selector);
+      if (!target) return { ready: false, problem: `${selector} が見つからない` };
+      return { ready: true, problem: null, fileView, target };
+    },
+
+    hasFileManagerRoot: () => !!document.querySelector('#fm-root'),
+
+    isLoaded: () => !!fm?.state?.folder,
+
+    selectionCount: () => fm?.state?.selection?.size ?? 0,
+
+    // 表示中のフォルダ（サブフォルダのこともある）のコード。分からなければ null
+    folderCode: () => fm?.state?.folder?.code ?? fm?.params?.contentId ?? null,
+
+    // 表示中のフォルダの直下の項目
+    children() {
+      const folder = fm?.state?.folder;
+      const c = folder?.children ?? folder?.contents ?? {};
+      const list = Array.isArray(c) ? c : Object.values(c);
+      return list.length ? list : fm?.state?.items ?? [];
+    },
+
+    selectedEntries() {
+      const ids = new Set(fm?.state?.selection || []);
+      return gofile.children().filter((c) => ids.has(c.id));
+    },
+
+    // 一覧の項目を JD2 に渡す URL にする。分からなければ null
+    //   フォルダ: https://gofile.io/d/<コード>
+    //   ファイル: https://gofile.io/d/<表示中のフォルダ>#file=<ID>（JD2 の GoFile プラグインの形式）
+    entryUrl(entry, folderCode) {
+      if (entry.type === 'folder') return entry.code ? gofileUrl(entry.code) : null;
+      return folderCode && entry.id ? `${gofileUrl(folderCode)}#file=${entry.id}` : null;
+    },
+
+    // 単一ファイル表示のページの URL。ページの URL が /d/<コード> の形でなければ null
+    //   ハッシュに #file=<ID> があれば残し、それ以外のクエリ・ハッシュは落とす。
+    currentFileUrl() {
+      const code = location.pathname.match(/^\/d\/([^/?#]+)/)?.[1];
+      if (!code) return null;
+      return gofileUrl(code) + (location.hash.match(/^#file=[A-Za-z0-9-]+/)?.[0] ?? '');
+    },
+  };
 
   // ---------------------------------------------------------------------------
   // 仕様変更などの警告バナー（GoFile 側の UI モジュールが使えなくても出せるよう素の DOM で作る）
@@ -110,8 +172,6 @@
   // ---------------------------------------------------------------------------
   // 小物
   // ---------------------------------------------------------------------------
-
-  const gofileUrl = (code) => `https://gofile.io/d/${code}`;
 
   // gofile-dl の parse_content_id を元にしたもの。テキストから GoFile の URL を取り出す。
   //   個別ファイルの URL（…/d/<フォルダ>#file=<ID>）は #file= を残して、そのファイルだけを送る。
@@ -382,30 +442,36 @@
     if (missing.length) throw new Error(`見つからない関数: ${missing.join(', ')}`);
     Object.assign(ui, { openMenu, popup, toast });
 
-    // ---- 操作：表示中のフォルダから ----
+    // ---- 操作：表示中のページから ----
 
-    function currentChildren() {
-      const folder = fm?.state?.folder;
-      const c = folder?.children ?? folder?.contents ?? {};
-      const list = Array.isArray(c) ? c : Object.values(c);
-      return list.length ? list : fm?.state?.items ?? [];
+    const NOT_LOADED = 'フォルダ情報を読み込めていません。ページを再読み込みしてください。';
+    const NO_CODE = 'このページの GoFile のコードが分かりません。GoFile の仕様が変わった可能性があります。';
+
+    // 単一ファイルのページ：表示中のファイル
+    function sendCurrentFile() {
+      if (!gofile.isLoaded()) return notify(NOT_LOADED, 'error');
+      const url = gofile.currentFileUrl();
+      if (!url) return notify(NO_CODE, 'error');
+      send([url]);
     }
 
-    function runCurrent(mode) {
-      const st = fm?.state;
-      if (!st?.folder) return notify('フォルダ情報を読み込めていません。ページを再読み込みしてください。', 'error');
-      if (st.fileView) return send([location.href.split(/[?#]/)[0]]);
-      const rootCode = st.folder.code ?? fm.params?.contentId;
-      if (mode === 'all') return send([gofileUrl(rootCode)]);
+    // フォルダのページ：表示中のフォルダ全体
+    function sendCurrentFolder() {
+      if (!gofile.isLoaded()) return notify(NOT_LOADED, 'error');
+      const code = gofile.folderCode();
+      if (!code) return notify(NO_CODE, 'error');
+      send([gofileUrl(code)]);
+    }
 
-      const ids = new Set(st.selection || []);
-      const entries = currentChildren().filter((c) => ids.has(c.id));
+    // フォルダのページ：選択した項目
+    function sendSelected() {
+      if (!gofile.isLoaded()) return notify(NOT_LOADED, 'error');
+      const entries = gofile.selectedEntries();
       if (!entries.length) return notify('項目が選択されていません', 'warning');
-      const urls = entries
-        .map((c) => (c.type === 'folder' ? (c.code ? gofileUrl(c.code) : null) : `${gofileUrl(rootCode)}#file=${c.id}`))
-        .filter(Boolean);
+      const folderCode = gofile.folderCode();
+      const urls = entries.map((c) => gofile.entryUrl(c, folderCode)).filter(Boolean);
       if (urls.length < entries.length) notify(`URL が分からない項目 ${entries.length - urls.length} 件は送っていません`, 'warning');
-      if (urls.length) return send(urls);
+      if (urls.length) send(urls);
     }
 
     // ---- ツールバー ----
@@ -441,17 +507,17 @@
       spacer.className = 'flex-1';
 
       const sendButton = iconButton(ICON.send, 'JD2 へ送る', (ev) => {
-        const sel = fm?.state?.selection?.size ?? 0;
+        const sel = gofile.selectionCount();
         ui.openMenu({
           anchor: ev.currentTarget,
           placement: 'bottom-end',
           items: () => [
             { type: 'label', label: 'JDownloader 2 へ送る' },
             ...(fileView
-              ? [{ label: 'このファイル', icon: 'file', onClick: () => runCurrent('all') }]
+              ? [{ label: 'このファイル', icon: 'file', onClick: sendCurrentFile }]
               : [
-                  { label: `選択した項目${sel ? `（${sel}）` : ''}`, icon: 'list-checks', disabled: !sel, onClick: () => runCurrent('selected') },
-                  { label: 'このフォルダ全体', icon: 'folder-tree', onClick: () => runCurrent('all') },
+                  { label: `選択した項目${sel ? `（${sel}）` : ''}`, icon: 'list-checks', disabled: !sel, onClick: sendSelected },
+                  { label: 'このフォルダ全体', icon: 'folder-tree', onClick: sendCurrentFolder },
                 ]),
             { label: 'URL を指定して…', icon: 'link', onClick: runUrls },
           ],
@@ -463,31 +529,16 @@
       return bar;
     }
 
-    // ツールバーを置けるかどうかと、置けないときの理由を調べる。
-    //   problem は GoFile の仕様変更が疑われる理由だけ。読み込み中・パスワード入力待ちなど
-    //   正常に起こりうる「まだ置けない」状態では null にして、警告を出さない。
-    function barState() {
-      if (!fm) return { ready: false, problem: 'FileManager を捕捉できない' };
-      const st = fm.state;
-      if (!st || !('status' in st)) return { ready: false, problem: 'FileManager に state.status がない' };
-      if (fm.destroyed || st.status !== 'ready' || !fm.root?.isConnected) return { ready: false, problem: null };
-      const fileView = !!st.fileView;
-      const selector = fileView ? '#fm-root' : '#fm-toolbar';
-      const target = document.querySelector(selector);
-      if (!target) return { ready: false, problem: `${selector} が見つからない` };
-      return { ready: true, problem: null, fileView, target };
-    }
-
     // GoFile のファイル管理部分があるのに、一定時間たってもツールバーを置けず、
     // その理由が仕様変更らしいときに警告する
     let hookTimer = null;
     let hookWarned = false;
     function watchHook() {
-      if (hookWarned || hookTimer || document.getElementById(BAR_ID) || !document.querySelector('#fm-root')) return;
+      if (hookWarned || hookTimer || document.getElementById(BAR_ID) || !gofile.hasFileManagerRoot()) return;
       hookTimer = setTimeout(() => {
         hookTimer = null;
-        if (document.getElementById(BAR_ID) || !document.querySelector('#fm-root')) return;
-        const { problem } = barState();
+        if (document.getElementById(BAR_ID) || !gofile.hasFileManagerRoot()) return;
+        const { problem } = gofile.barState();
         if (!problem) return;
         hookWarned = true;
         showBanner(
@@ -500,7 +551,7 @@
     function mountBar() {
       watchHook();
       const existing = document.getElementById(BAR_ID);
-      const s = barState();
+      const s = gofile.barState();
       if (!s.ready) {
         existing?.remove();
         return;
