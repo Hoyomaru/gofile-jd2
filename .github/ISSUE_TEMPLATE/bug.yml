@@ -1,0 +1,54 @@
+name: 不具合の報告
+description: 動かない・表示がおかしいなどの不具合を知らせる
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GoFile 側の仕様変更で動かなくなることがあります。画面右下に赤い警告が出ている場合は、その文面をそのまま貼ってください。
+  - type: textarea
+    id: what
+    attributes:
+      label: 起きたこと
+      description: 何をしたら、どうなったか。期待していた動作も書いてください。
+    validations:
+      required: true
+  - type: textarea
+    id: banner
+    attributes:
+      label: 警告バナーの文面
+      description: 出ていなければ空欄でかまいません。
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: スクリプトの版
+      description: Tampermonkey などのダッシュボードに出ている版（例 0.8.3）
+    validations:
+      required: true
+  - type: dropdown
+    id: manager
+    attributes:
+      label: ユーザースクリプトの管理ツール
+      options:
+        - Tampermonkey
+        - Violentmonkey
+        - その他
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: ブラウザと版
+      placeholder: 例 Chrome 142
+  - type: input
+    id: jd2
+    attributes:
+      label: JDownloader 2 の版
+      description: JD2 の「ヘルプ」→「JDownloader について」で確認できます。
+  - type: textarea
+    id: console
+    attributes:
+      label: コンソールのエラー
+      description: DevTools（F12）のコンソールに出ているエラーがあれば貼ってください。
+      render: text
