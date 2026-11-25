@@ -19,24 +19,26 @@ git log -p --all | grep -iE '...'  # APIキー・パスワード等のコミッ�
 
 ## 2. 一覧表
 
-| ID | 観点 | 概要（1行） | 該当箇所 | 効果 | 作業量 | 確認レベル |
-|---|---|---|---|---|---|---|
-| A-1 | バグ | モジュール読込失敗時は TM メニューも登録されず、案内している代替手段が使えない | gofile-jd2.user.js `start` / `boot` L167-176, L403-406, L412-415 / README L40-47 | 高 | 中 | コード確認 |
-| A-2 | バグ | 貼り付けた `#file=` 付き URL がフォルダ全体として送られる／1 単語の行を ID と誤認 | gofile-jd2.user.js `parseContentIds` L95-103 | 中 | 小 | コード確認 |
-| A-3 | バグ | 設定画面の接続テスト・保存が popup の同期描画に依存している | gofile-jd2.user.js `openSettings` L289, L299-309 | 中 | 小 | 推測 |
-| A-4 | バグ | 送る URL の組み立てで、コード欠落や単一ファイル表示の URL 形式を確認していない | gofile-jd2.user.js `runCurrent` L207-209 | 低 | 小 | 推測 |
-| B-1 | 設計 | GoFile の内部状態の読み取りが `start` 内の各所に散らばっている | gofile-jd2.user.js `currentChildren` / `runCurrent` / `buildBar` / `mountBar` | 中 | 中 | コード確認 |
-| B-2 | 設計 | `rootCode`・`mode === 'all'` の命名が実際の意味と合っていない | gofile-jd2.user.js `runCurrent` L204-219, `buildBar` L352 | 低 | 小 | コード確認 |
-| B-3 | 設計 | 設定キーと既定値が読み出しと保存に分かれて重複している | gofile-jd2.user.js L85-88, `openSettings` L290-292 | 低 | 小 | コード確認 |
-| C-1 | パフォーマンス | ページ全体の DOM 変更のたびに `mountBar` が同期実行される | gofile-jd2.user.js `start` L408, `mountBar` L384-400 | 低 | 小 | コード確認 |
-| D-1 | UI/UX | 送信中・接続テスト中の表示がなく、二重送信でき、タイムアウトの原因が分からない | gofile-jd2.user.js `send` L180-193, `gmRequest` L115-128, `openSettings` L301-308 | 中 | 小 | 推測 |
-| D-2 | UI/UX | Click'n'Load アドレスを検証せず保存するため、誤入力時のエラー文が的外れになる | gofile-jd2.user.js `openSettings` L290, `gmRequest` L124 | 低 | 小 | コード確認 |
-| D-3 | UI/UX | 警告バナーに role がなく、ポップアップは Enter で確定できない | gofile-jd2.user.js `showBanner` L55-80, `runUrls` / `openSettings` | 低 | 小 | コード確認 |
-| E-1 | ドキュメント | GoFile への依存点と仕様変更時の調べ方の保守メモがない | README.md（該当節なし） | 低 | 小 | コード確認 |
-| E-2 | ドキュメント | 別の PC の JD2 へ送るときに JD2 側で必要な設定が書かれていない | README.md L15, L23 | 低 | 小 | 推測 |
-| F-1 | 依存関係 | FileManager を捕まえた後の仕様変更（status 値・セレクタ等）は無言で失敗する | gofile-jd2.user.js `mountBar` L384-400, `watchHook` L370-382 | 中 | 小 | コード確認 |
-| F-2 | 依存関係 | 自前の UI が、GoFile の CSS に存在するとは限らない Tailwind クラスに依存している | gofile-jd2.user.js `buildBar` L333-334, `openSettings` L281, `ICON` L315-316 | 低 | 小 | 推測 |
-| F-3 | 開発環境 | lint・formatter の設定がない | リポジトリ直下 | 低 | 小 | コード確認 |
+「該当箇所」の行番号は、調査した時点の v0.7.1 のものです。「状態」の版は、その項目を直した版です。いずれも GoFile の実際のページでは、まだ試していません。
+
+| ID | 観点 | 概要（1行） | 該当箇所 | 効果 | 作業量 | 確認レベル | 状態 |
+|---|---|---|---|---|---|---|---|
+| A-1 | バグ | モジュール読込失敗時は TM メニューも登録されず、案内している代替手段が使えない | gofile-jd2.user.js `start` / `boot` L167-176, L403-406, L412-415 / README L40-47 | 高 | 中 | コード確認 | 対応済み（v0.8.0） |
+| A-2 | バグ | 貼り付けた `#file=` 付き URL がフォルダ全体として送られる／1 単語の行を ID と誤認 | gofile-jd2.user.js `parseContentIds` L95-103 | 中 | 小 | コード確認 | 対応済み（v0.8.0） |
+| A-3 | バグ | 設定画面の接続テスト・保存が popup の同期描画に依存している | gofile-jd2.user.js `openSettings` L289, L299-309 | 中 | 小 | 推測 | 対応済み（v0.8.0） |
+| A-4 | バグ | 送る URL の組み立てで、コード欠落や単一ファイル表示の URL 形式を確認していない | gofile-jd2.user.js `runCurrent` L207-209 | 低 | 小 | 推測 | 対応済み（v0.8.1） |
+| B-1 | 設計 | GoFile の内部状態の読み取りが `start` 内の各所に散らばっている | gofile-jd2.user.js `currentChildren` / `runCurrent` / `buildBar` / `mountBar` | 中 | 中 | コード確認 | 対応済み（v0.8.1） |
+| B-2 | 設計 | `rootCode`・`mode === 'all'` の命名が実際の意味と合っていない | gofile-jd2.user.js `runCurrent` L204-219, `buildBar` L352 | 低 | 小 | コード確認 | 対応済み（v0.8.1） |
+| B-3 | 設計 | 設定キーと既定値が読み出しと保存に分かれて重複している | gofile-jd2.user.js L85-88, `openSettings` L290-292 | 低 | 小 | コード確認 | 見送り |
+| C-1 | パフォーマンス | ページ全体の DOM 変更のたびに `mountBar` が同期実行される | gofile-jd2.user.js `start` L408, `mountBar` L384-400 | 低 | 小 | コード確認 | 対応済み（v0.8.3） |
+| D-1 | UI/UX | 送信中・接続テスト中の表示がなく、二重送信でき、タイムアウトの原因が分からない | gofile-jd2.user.js `send` L180-193, `gmRequest` L115-128, `openSettings` L301-308 | 中 | 小 | 推測 | 対応済み（v0.8.0） |
+| D-2 | UI/UX | Click'n'Load アドレスを検証せず保存するため、誤入力時のエラー文が的外れになる | gofile-jd2.user.js `openSettings` L290, `gmRequest` L124 | 低 | 小 | コード確認 | 対応済み（v0.8.2） |
+| D-3 | UI/UX | 警告バナーに role がなく、ポップアップは Enter で確定できない | gofile-jd2.user.js `showBanner` L55-80, `runUrls` / `openSettings` | 低 | 小 | コード確認 | 対応済み（v0.8.2） |
+| E-1 | ドキュメント | GoFile への依存点と仕様変更時の調べ方の保守メモがない | README.md（該当節なし） | 低 | 小 | コード確認 | 対応済み（v0.8.2） |
+| E-2 | ドキュメント | 別の PC の JD2 へ送るときに JD2 側で必要な設定が書かれていない | README.md L15, L23 | 低 | 小 | 推測 | 見送り |
+| F-1 | 依存関係 | FileManager を捕まえた後の仕様変更（status 値・セレクタ等）は無言で失敗する | gofile-jd2.user.js `mountBar` L384-400, `watchHook` L370-382 | 中 | 小 | コード確認 | 対応済み（v0.8.0） |
+| F-2 | 依存関係 | 自前の UI が、GoFile の CSS に存在するとは限らない Tailwind クラスに依存している | gofile-jd2.user.js `buildBar` L333-334, `openSettings` L281, `ICON` L315-316 | 低 | 小 | 推測 | 見送り（実機で見た目を確認） |
+| F-3 | 開発環境 | lint・formatter の設定がない | リポジトリ直下 | 低 | 小 | コード確認 | 見送り |
 
 ## 3. 詳細
 
