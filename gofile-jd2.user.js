@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.8.1
+// @version      0.8.2
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -119,6 +119,7 @@
       document.getElementById(BANNER_ID)?.remove();
       const box = document.createElement('div');
       box.id = BANNER_ID;
+      box.setAttribute('role', 'alert');
       box.style.cssText =
         'position:fixed;right:16px;bottom:16px;z-index:2147483647;max-width:420px;padding:12px 14px;' +
         'border-radius:12px;background:#2a1215;border:1px solid #f87171;color:#fecaca;' +
@@ -132,6 +133,7 @@
       const close = document.createElement('button');
       close.textContent = '×';
       close.title = '閉じる';
+      close.setAttribute('aria-label', '閉じる');
       close.style.cssText = 'position:absolute;top:6px;right:10px;background:none;border:0;color:#fecaca;font-size:18px;cursor:pointer';
       close.onclick = () => box.remove();
       box.append(title, body, close);
@@ -163,8 +165,25 @@
   const autoStartSetting = () => GM_getValue('cfg.autoStart') ?? true;
   const dirSetting = () => String(GM_getValue('cfg.dir') ?? '').trim();
 
+  // Click'n'Load アドレスを整える。空なら既定値、スキームが無ければ http:// を補う。
+  //   http / https の URL として読めなければ null。
+  function normalizeJdUrl(value) {
+    let v = String(value ?? '').trim();
+    if (!v) return DEFAULT_JD_URL;
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v = `http://${v}`;
+    try {
+      const u = new URL(v);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      return u.href.replace(/\/+$/, '');
+    } catch {
+      return null;
+    }
+  }
+  const INVALID_JD_URL = "Click'n'Load アドレスの形が正しくありません（例: http://127.0.0.1:9666）";
+
+  // jdUrl は normalizeJdUrl を通した値を渡す
   function saveSettings({ jdUrl, autoStart, dir }) {
-    GM_setValue('cfg.jdUrl', String(jdUrl ?? '').trim() || DEFAULT_JD_URL);
+    GM_setValue('cfg.jdUrl', jdUrl || DEFAULT_JD_URL);
     GM_setValue('cfg.autoStart', !!autoStart);
     GM_setValue('cfg.dir', String(dir ?? '').trim());
   }
@@ -306,7 +325,7 @@
       content: `
         <div class="space-y-4">
           <div>
-            <label for="gm-urls" class="mb-1.5 block text-xs font-medium text-slate-400">GoFile の URL（1 行に 1 つ。ID だけでも可）</label>
+            <label for="gm-urls" class="mb-1.5 block text-xs font-medium text-slate-400">GoFile の URL（1 行に 1 つ。ID だけでも可。Ctrl+Enter で送る）</label>
             <textarea id="gm-urls" rows="8" class="input font-mono text-sm" style="height:auto"
                       placeholder="https://gofile.io/d/xxxxxx&#10;https://gofile.io/d/yyyyyy"></textarea>
           </div>
@@ -334,9 +353,11 @@
   // ---------------------------------------------------------------------------
   // 設定画面
   // ---------------------------------------------------------------------------
-  async function testConnection(url) {
+  async function testConnection(value) {
+    const url = normalizeJdUrl(value);
+    if (!url) return { ok: false, message: `接続失敗: ${INVALID_JD_URL}` };
     try {
-      const ver = await jdCheck(url || DEFAULT_JD_URL);
+      const ver = await jdCheck(url);
       return { ok: true, message: `接続成功: JDownloader 2${ver ? `（ビルド ${ver}）` : ''}` };
     } catch (e) {
       return { ok: false, message: `接続失敗: ${e.message}` };
@@ -363,9 +384,38 @@
     true,
   );
 
+  // ポップアップをキーボードで確定する。
+  //   GoFile の popup の確定ボタン（actions）は onClick にしか処理を持たないので、
+  //   入力欄から祖先をたどってそのボタンを探し、クリックする。
+  //   設定画面: テキスト欄で Enter → 保存 / URL 指定: URL 欄で Ctrl+Enter、パスワード欄で Enter → 送る
+  function clickPopupAction(fromEl, label) {
+    for (let el = fromEl.parentElement; el && el !== document.body; el = el.parentElement) {
+      const btn = [...el.querySelectorAll('button')].find((b) => b.textContent.trim() === label);
+      if (btn) return btn.click();
+    }
+  }
+
+  document.addEventListener(
+    'keydown',
+    (ev) => {
+      if (ev.key !== 'Enter' || ev.isComposing) return;
+      const t = ev.target;
+      let label = null;
+      if (t?.closest?.(`#${FORM_ID}`) && t.tagName === 'INPUT' && t.type === 'text') label = '保存';
+      else if (t?.id === 'gm-urls' && (ev.ctrlKey || ev.metaKey)) label = '送る';
+      else if (t?.id === 'gm-urls-pwd') label = '送る';
+      if (!label) return;
+      ev.preventDefault();
+      clickPopupAction(t, label);
+    },
+    true,
+  );
+
   async function openSettingsFallback() {
-    const jdUrl = prompt("JDownloader 2 の Click'n'Load アドレス（簡易版の設定画面です）", jdUrlSetting());
-    if (jdUrl == null) return;
+    const input = prompt("JDownloader 2 の Click'n'Load アドレス（簡易版の設定画面です）", jdUrlSetting());
+    if (input == null) return;
+    const jdUrl = normalizeJdUrl(input);
+    if (!jdUrl) return notify(`${INVALID_JD_URL}。保存していません`, 'error');
     const dir = prompt('保存先フォルダ（空欄なら JD2 の既定の保存先）', dirSetting());
     if (dir == null) return;
     const autoStart = confirm(
@@ -387,7 +437,7 @@
             <label for="gm-jdUrl" class="mb-1.5 block text-xs font-medium text-slate-400">JDownloader 2 の Click'n'Load アドレス</label>
             <input id="gm-jdUrl" name="jdUrl" type="text" class="input" autocomplete="off"
                    value="${escapeHtml(jdUrlSetting())}" placeholder="${DEFAULT_JD_URL}">
-            <p class="mt-1 text-xs text-slate-500">JD2 の初期値は ${DEFAULT_JD_URL}</p>
+            <p class="mt-1 text-xs text-slate-500">JD2 の初期値は ${DEFAULT_JD_URL}（http:// は省略可）</p>
           </div>
           <div>
             <label for="gm-dir" class="mb-1.5 block text-xs font-medium text-slate-400">保存先フォルダ</label>
@@ -412,7 +462,9 @@
               notify('設定画面の入力欄を読み取れませんでした。保存していません', 'error');
               return h.close();
             }
-            saveSettings({ jdUrl: els.jdUrl.value, autoStart: els.autoStart.checked, dir: els.dir.value });
+            const jdUrl = normalizeJdUrl(els.jdUrl.value);
+            if (!jdUrl) return notify(INVALID_JD_URL, 'error');
+            saveSettings({ jdUrl, autoStart: els.autoStart.checked, dir: els.dir.value });
             notify('設定を保存しました', 'success');
             h.close();
           },

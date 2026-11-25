@@ -20,7 +20,7 @@ GoFile のページにツールバーを追加して、GoFile の URL を JDownl
 
 ツールバーの ⚙（または Tampermonkey のメニューの「設定」）で変えられます。
 
-- **Click'n'Load アドレス**：JD2 の受け口。初期値は `http://127.0.0.1:9666`。
+- **Click'n'Load アドレス**：JD2 の受け口。初期値は `http://127.0.0.1:9666`。`http://` を省くと補って保存します。URL として読めない値は保存しません。
 - **保存先フォルダ**：JD2 が動いている PC 上のフォルダを絶対パスで指定します（例 `D:\Downloads\GoFile`）。空欄なら JD2 の既定の保存先です。指定したフォルダの中に、GoFile のフォルダ名ごとのフォルダを作って保存します（JD2 のパッケージ名 `<jd:packagename>` を末尾に付けて渡します。自分で `<jd:…>` を含めて書いた場合はそのまま渡します）。JD2 のパッケージャーに保存先のルールがあると、そちらが優先されることがあります。
 - **送ったらリンクグラバーを経由せずダウンロードを開始する**：初期値はオン。オフにするとリンクグラバーで止まり、確認してから開始できます。
 
@@ -31,7 +31,7 @@ GoFile のページにツールバーを追加して、GoFile の URL を JDownl
 - **選択した項目**：一覧でチェックを入れた項目を送ります。フォルダは `https://gofile.io/d/<コード>`、ファイルは `https://gofile.io/d/<フォルダ>#file=<ID>` の形で渡します。
 - **このフォルダ全体**：表示中のフォルダの URL を渡します。
 - **このファイル**：単一ファイルのページでは、表示中のファイルを渡します。
-- **URL を指定して…**：GoFile の URL を複数まとめて貼り付けて送ります（1 行に 1 つ。ID だけでも可）。`…#file=<ID>` 付きの URL はそのファイルだけを送ります。URL として読み取れなかった行は送らずに件数を知らせます。パスワードを入れた場合は一緒に渡します。Tampermonkey のメニューからも呼べるので、フォルダページ以外でも使えます。
+- **URL を指定して…**：GoFile の URL を複数まとめて貼り付けて送ります（1 行に 1 つ。ID だけでも可）。`…#file=<ID>` 付きの URL はそのファイルだけを送ります。URL として読み取れなかった行は送らずに件数を知らせます。パスワードを入れた場合は一緒に渡します。URL 欄で Ctrl+Enter、パスワード欄で Enter を押しても送れます（設定画面ではテキスト欄で Enter を押すと保存します）。Tampermonkey のメニューからも呼べるので、フォルダページ以外でも使えます。
 
 送信中は「送信中…」と表示し、終わるまでは次の送信を受け付けません。
 
@@ -45,6 +45,26 @@ GoFile 側の仕様変更などで動かなくなったときは、画面右下�
 
 - **起動できませんでした**：GoFile の内部モジュール（メニュー・ポップアップ・トースト通知）を読み込めない。ツールバーは出ません。Tampermonkey のメニューの「URL を指定して JDownloader 2 へ送る」と「設定」は、ブラウザの入力ダイアログを使う簡易版で動きます（URL はスペース区切りで入力します。パスワードは渡せません）。
 - **ツールバーを表示できません**：ページのファイル管理部分を取得できない、またはツールバーを置く場所が見つからない。警告には原因（例 `#fm-toolbar が見つからない`）が出ます。Tampermonkey のメニューの「URL を指定して JDownloader 2 へ送る」は普段通り使えます。
+
+## 保守メモ：GoFile への依存点
+
+GoFile の内部の仕組みを使っているので、GoFile の更新で壊れることがあります。壊れたときは次の順に調べます。FileManager と GoFile の DOM を読む処理は、`gofile-jd2.user.js` 冒頭の `gofile` オブジェクトにまとめてあるので、まずそこを直します。
+
+| 依存しているもの | 使っている箇所 | 壊れたときの症状 |
+|---|---|---|
+| FileManager のコンストラクタが `this.loadSeq = 0` を代入すること（`Object.prototype.loadSeq` のセッターで捕まえる）。クラスフィールド構文（`loadSeq = 0;`）に変わるとセッターを通らない | 冒頭の捕捉部分 | 警告「ツールバーを表示できません（FileManager を捕捉できない）」 |
+| FileManager の `state`（`status === 'ready'`、`selection` が Set、`folder.children` / `contents`、`items`、`fileView`、`folder.code`）、`params.contentId`、`root`、`destroyed`。一覧の項目の `id` / `type` / `code` | `gofile` オブジェクト | `status` 自体が無いと警告が出る。値や名前が変わっただけだと、ツールバーが出ない・選択が数えられないなど、警告なしで動かなくなる |
+| DOM の `#fm-root`（ファイル管理部分）と `#fm-toolbar`（ツールバーの挿入先） | `gofile.barState()` など | 警告「ツールバーを表示できません（#fm-toolbar が見つからない）」。`#fm-root` が変わると警告も出ない |
+| 単一ファイルのページの URL が `/d/<コード>`（＋`#file=<ID>`）の形であること | `gofile.currentFileUrl()` | 「このファイル」でエラーのトースト |
+| UI モジュール `/js/ui/menu.js`（`openMenu`）、`/js/ui/popup.js`（`popup.open`）、`/js/ui/toast.js`（`toast`） | `start()` | 警告「起動できませんでした」。メニューからの簡易版だけが動く |
+| 上のモジュールの引数の形：`popup.open({ title, size, content, actions: [{ label, variant, onClick(h) }] })` と `h.close()`、`toast(msg, { type })`、`openMenu({ anchor, placement, items })`、メニューのアイコン名 `file` / `list-checks` / `folder-tree` / `link` | `runUrls` / `openSettings` / `buildBar` | 警告なしで、ポップアップやメニューの表示が崩れたり、ボタンが効かなくなったりする |
+| GoFile の CSS のクラス（`input` / `panel` / `icon-btn` / `btn-secondary` と Tailwind のクラス） | ツールバー・ポップアップの HTML | 見た目だけが崩れる |
+
+調べ方の目安：
+
+- DevTools の Sources で `/js/ui/menu.js` などを開き、export の名前と引数を確かめる。
+- GoFile のスクリプトで `loadSeq` を検索し、FileManager のコンストラクタと `state` の中身を確かめる。
+- Console で `[GoFile→JD2]` の出力を見る。
 
 ## ライセンスと出典
 
