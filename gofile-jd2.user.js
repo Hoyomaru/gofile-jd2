@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.8.2
+// @version      0.8.3
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -615,7 +615,18 @@
       s.fileView ? s.target.prepend(bar) : s.target.insertAdjacentElement('beforebegin', bar);
     }
 
-    new MutationObserver(mountBar).observe(document.documentElement, { childList: true, subtree: true });
+    // DOM の変更はページ全体で頻繁に起きるので、mountBar は 1 フレームに 1 回にまとめる
+    let mountQueued = false;
+    const scheduleMount = () => {
+      if (mountQueued) return;
+      mountQueued = true;
+      requestAnimationFrame(() => {
+        mountQueued = false;
+        mountBar();
+      });
+    };
+
+    new MutationObserver(scheduleMount).observe(document.documentElement, { childList: true, subtree: true });
     mountBar();
   }
 
