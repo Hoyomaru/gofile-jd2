@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.7.1
+// @version      0.8.0
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -80,6 +80,20 @@
   }
 
   // ---------------------------------------------------------------------------
+  // GoFile の UI モジュール（start() で読み込む）
+  //   読み込めなかったときは null のまま。そのときも「URL を指定して送る」と「設定」は
+  //   Tampermonkey のメニューから prompt / alert の簡易版で使えるようにしておく。
+  // ---------------------------------------------------------------------------
+  const ui = { openMenu: null, popup: null, toast: null };
+
+  // type: 'success' | 'warning' | 'error'。省略すると経過の知らせ（簡易版では表示しない）。
+  function notify(message, type) {
+    if (ui.toast) return ui.toast(message, type ? { type } : {});
+    (type === 'error' || type === 'warning' ? console.warn : console.log)(LOG, message);
+    if (type) alert(`GoFile → JD2: ${message}`);
+  }
+
+  // ---------------------------------------------------------------------------
   // 設定
   // ---------------------------------------------------------------------------
   const DEFAULT_JD_URL = 'http://127.0.0.1:9666';
@@ -87,42 +101,57 @@
   const autoStartSetting = () => GM_getValue('cfg.autoStart') ?? true;
   const dirSetting = () => String(GM_getValue('cfg.dir') ?? '').trim();
 
+  function saveSettings({ jdUrl, autoStart, dir }) {
+    GM_setValue('cfg.jdUrl', String(jdUrl ?? '').trim() || DEFAULT_JD_URL);
+    GM_setValue('cfg.autoStart', !!autoStart);
+    GM_setValue('cfg.dir', String(dir ?? '').trim());
+  }
+
   // ---------------------------------------------------------------------------
   // 小物
   // ---------------------------------------------------------------------------
 
-  // gofile-dl の parse_content_id 相当。テキストから GoFile のコンテンツ ID を取り出す。
-  function parseContentIds(text) {
-    const ids = [];
+  const gofileUrl = (code) => `https://gofile.io/d/${code}`;
+
+  // gofile-dl の parse_content_id を元にしたもの。テキストから GoFile の URL を取り出す。
+  //   個別ファイルの URL（…/d/<フォルダ>#file=<ID>）は #file= を残して、そのファイルだけを送る。
+  //   URL を含まない行は、ID だけの行（英数字とハイフンで 5 文字以上）なら ID とみなす。
+  //   どちらでもない空でない行は skipped に数える。
+  function parseGofileUrls(text) {
+    const urls = [];
+    let skipped = 0;
     for (const line of String(text).split(/\r?\n/)) {
-      const urls = [...line.matchAll(/gofile\.io\/d\/([^/?#\s]+)/gi)].map((m) => m[1]);
-      if (urls.length) ids.push(...urls);
-      else if (/^\s*[A-Za-z0-9-]+\s*$/.test(line)) ids.push(line.trim());
+      if (!line.trim()) continue;
+      const found = [...line.matchAll(/gofile\.io\/d\/([^/?#\s]+)[^#\s]*(#file=[A-Za-z0-9-]+)?/gi)].map(
+        (m) => gofileUrl(m[1]) + (m[2] ?? ''),
+      );
+      if (found.length) urls.push(...found);
+      else if (/^\s*[A-Za-z0-9-]{5,}\s*$/.test(line)) urls.push(gofileUrl(line.trim()));
+      else skipped++;
     }
-    return [...new Set(ids)];
+    return { urls: [...new Set(urls)], skipped };
   }
 
   const escapeHtml = (s) =>
     String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-
-  const gofileUrl = (code) => `https://gofile.io/d/${code}`;
 
   // ---------------------------------------------------------------------------
   // JDownloader 2（Click'n'Load）との通信
   //   GoFile の URL だけを渡し、中身の取得・フォルダ構造・パスワードは JD2 の GoFile プラグインに任せる。
   //   個別のファイルは https://gofile.io/d/<フォルダ>#file=<ファイルID> の形で渡す（JD2 の GoFile プラグインの形式）。
   // ---------------------------------------------------------------------------
-  function gmRequest(method, url, data) {
+  function gmRequest(method, url, data, timeout = 15000) {
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method,
         url,
         headers: data ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {},
         data,
-        timeout: 15000,
+        timeout,
         onload: (r) => resolve({ ok: r.status >= 200 && r.status < 300, status: r.status, text: r.responseText || '' }),
-        onerror: () => reject(new Error('接続できません（JDownloader 2 は起動していますか？）')),
-        ontimeout: () => reject(new Error('タイムアウト')),
+        onerror: () => reject(new Error('接続できません（JDownloader 2 は起動していますか？ アドレスは正しいですか？）')),
+        ontimeout: () =>
+          reject(new Error('JDownloader 2 から応答がありません（JD2 に「許可」の確認が出ていないか見てください）')),
       });
     });
   }
@@ -147,6 +176,7 @@
   //        GoFile のフォルダ名（＝パッケージ名）のフォルダに入るようにする。この変数は保存先を決めるときに
   //        JD2 が展開する。<jd:subfolderbyplugin> はその時点では展開されないので使えない。
   //        利用者が自分で <jd:…> を書いたときはそのまま渡す。
+  //   タイムアウト: 初回は JD2 が許可ダイアログへの応答を待ってから返すことがあるので、長めにとる。
   async function jdAdd(urls, password) {
     const body = new URLSearchParams({ urls: urls.join('\n'), referer: location.href, source: location.href });
     if (autoStartSetting()) body.set('autostart', '1');
@@ -157,8 +187,184 @@
       body.set('dpass', lines);
       body.set('apass', lines);
     }
-    const res = await gmRequest('POST', `${jdBase()}/flashgot`, body.toString());
+    const res = await gmRequest('POST', `${jdBase()}/flashgot`, body.toString(), 60000);
     if (!res.ok || /^\s*failed/i.test(res.text)) throw new Error(res.text.trim() || `HTTP ${res.status}`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 送信
+  // ---------------------------------------------------------------------------
+  let sending = false;
+
+  async function send(urls, password) {
+    if (sending) return notify('前の送信がまだ終わっていません。少し待ってください', 'warning');
+    sending = true;
+    notify(`${urls.length} 件の URL を JDownloader 2 へ送信中…`);
+    try {
+      await jdAdd(urls, password);
+      notify(
+        autoStartSetting()
+          ? `${urls.length} 件の URL を JDownloader 2 へ送りました（自動でダウンロードを開始します）`
+          : `${urls.length} 件の URL を JDownloader 2 へ送りました（リンクグラバーを確認してください）`,
+        'success',
+      );
+    } catch (e) {
+      console.error(LOG, e);
+      notify(`JDownloader 2 への送信に失敗しました: ${e.message}`, 'error');
+    } finally {
+      sending = false;
+    }
+  }
+
+  // テキストから URL を取り出して送る。送るものが無ければ false。
+  function sendText(text, password) {
+    const { urls, skipped } = parseGofileUrls(text);
+    if (!urls.length) {
+      notify('GoFile の URL が見つかりません', 'warning');
+      return false;
+    }
+    if (skipped) notify(`URL として読み取れなかった行 ${skipped} 件は送っていません`, 'warning');
+    send(urls, password);
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 操作：URL を指定して
+  // ---------------------------------------------------------------------------
+  function runUrls() {
+    if (!ui.popup) {
+      const text = prompt(
+        'GoFile の URL を貼り付けてください（複数ならスペース区切り。ID だけでも可）\n' +
+          '※ GoFile の画面部品を読み込めないため簡易版です。パスワードは渡せません。',
+      );
+      if (text != null) sendText(text.split(/\s+/).join('\n'), '');
+      return;
+    }
+    ui.popup.open({
+      title: 'URL を指定して JDownloader 2 へ送る',
+      size: '2xl',
+      content: `
+        <div class="space-y-4">
+          <div>
+            <label for="gm-urls" class="mb-1.5 block text-xs font-medium text-slate-400">GoFile の URL（1 行に 1 つ。ID だけでも可）</label>
+            <textarea id="gm-urls" rows="8" class="input font-mono text-sm" style="height:auto"
+                      placeholder="https://gofile.io/d/xxxxxx&#10;https://gofile.io/d/yyyyyy"></textarea>
+          </div>
+          <div>
+            <label for="gm-urls-pwd" class="mb-1.5 block text-xs font-medium text-slate-400">パスワード（任意）</label>
+            <input id="gm-urls-pwd" type="password" class="input" autocomplete="off" placeholder="JD2 に一緒に渡します">
+          </div>
+        </div>`,
+      actions: [
+        { label: 'キャンセル', variant: 'ghost' },
+        {
+          label: '送る',
+          variant: 'primary',
+          onClick: (h) => {
+            const text = document.getElementById('gm-urls')?.value ?? '';
+            const pwd = document.getElementById('gm-urls-pwd')?.value ?? '';
+            if (sendText(text, pwd)) h.close();
+          },
+        },
+      ],
+    });
+    setTimeout(() => document.getElementById('gm-urls')?.focus(), 50);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 設定画面
+  // ---------------------------------------------------------------------------
+  async function testConnection(url) {
+    try {
+      const ver = await jdCheck(url || DEFAULT_JD_URL);
+      return { ok: true, message: `接続成功: JDownloader 2${ver ? `（ビルド ${ver}）` : ''}` };
+    } catch (e) {
+      return { ok: false, message: `接続失敗: ${e.message}` };
+    }
+  }
+
+  // 接続テストボタン。popup の描画タイミングに左右されないよう、document で一度だけ受ける。
+  document.addEventListener(
+    'click',
+    async (ev) => {
+      const btn = ev.target?.closest?.(`#${FORM_ID} [data-gm-act="test"]`);
+      if (!btn || btn.disabled) return;
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '確認中…';
+      try {
+        const { ok, message } = await testConnection(btn.form?.elements.jdUrl?.value.trim());
+        notify(message, ok ? 'success' : 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    },
+    true,
+  );
+
+  async function openSettingsFallback() {
+    const jdUrl = prompt("JDownloader 2 の Click'n'Load アドレス（簡易版の設定画面です）", jdUrlSetting());
+    if (jdUrl == null) return;
+    const dir = prompt('保存先フォルダ（空欄なら JD2 の既定の保存先）', dirSetting());
+    if (dir == null) return;
+    const autoStart = confirm(
+      '送ったらリンクグラバーを経由せずダウンロードを開始しますか？\n（OK = 開始する / キャンセル = リンクグラバーで止める）',
+    );
+    saveSettings({ jdUrl, autoStart, dir });
+    const { ok, message } = await testConnection(jdUrlSetting());
+    notify(`設定を保存しました。${message}`, ok ? 'success' : 'error');
+  }
+
+  function openSettings() {
+    if (!ui.popup) return openSettingsFallback();
+    ui.popup.open({
+      title: 'GoFile → JD2 設定',
+      size: 'lg',
+      content: `
+        <form id="${FORM_ID}" class="space-y-4" onsubmit="return false">
+          <div>
+            <label for="gm-jdUrl" class="mb-1.5 block text-xs font-medium text-slate-400">JDownloader 2 の Click'n'Load アドレス</label>
+            <input id="gm-jdUrl" name="jdUrl" type="text" class="input" autocomplete="off"
+                   value="${escapeHtml(jdUrlSetting())}" placeholder="${DEFAULT_JD_URL}">
+            <p class="mt-1 text-xs text-slate-500">JD2 の初期値は ${DEFAULT_JD_URL}</p>
+          </div>
+          <div>
+            <label for="gm-dir" class="mb-1.5 block text-xs font-medium text-slate-400">保存先フォルダ</label>
+            <input id="gm-dir" name="dir" type="text" class="input" autocomplete="off"
+                   value="${escapeHtml(dirSetting())}" placeholder="例: D:\\Downloads\\GoFile">
+            <p class="mt-1 text-xs text-slate-500">空欄なら JD2 の既定の保存先。JD2 が動いている PC 上のフォルダを絶対パスで指定します。中には GoFile のフォルダ名ごとにフォルダを作ります</p>
+          </div>
+          <label class="flex items-center gap-2 text-sm text-slate-300">
+            <input name="autoStart" type="checkbox" ${autoStartSetting() ? 'checked' : ''}>
+            送ったらリンクグラバーを経由せずダウンロードを開始する
+          </label>
+          <button type="button" data-gm-act="test" class="w-full rounded-lg border border-sky-500 px-3 py-2 text-sky-400 hover:bg-sky-500/10">接続テスト</button>
+        </form>`,
+      actions: [
+        { label: 'キャンセル', variant: 'ghost' },
+        {
+          label: '保存',
+          variant: 'primary',
+          onClick: (h) => {
+            const els = document.forms[FORM_ID]?.elements;
+            if (!els) {
+              notify('設定画面の入力欄を読み取れませんでした。保存していません', 'error');
+              return h.close();
+            }
+            saveSettings({ jdUrl: els.jdUrl.value, autoStart: els.autoStart.checked, dir: els.dir.value });
+            notify('設定を保存しました', 'success');
+            h.close();
+          },
+        },
+      ],
+    });
+  }
+
+  // Tampermonkey のメニューからも呼べるようにする（フォルダページ以外でも、GoFile の画面部品を読めなくても使える）
+  if (typeof GM_registerMenuCommand === 'function') {
+    GM_registerMenuCommand('URL を指定して JDownloader 2 へ送る', runUrls);
+    GM_registerMenuCommand('設定', openSettings);
   }
 
   // ---------------------------------------------------------------------------
@@ -174,23 +380,7 @@
       .filter(([, f]) => typeof f !== 'function')
       .map(([k]) => k);
     if (missing.length) throw new Error(`見つからない関数: ${missing.join(', ')}`);
-
-    // ---- 送信 ----
-
-    async function send(urls, password) {
-      try {
-        await jdAdd(urls, password);
-        toast(
-          autoStartSetting()
-            ? `${urls.length} 件の URL を JDownloader 2 へ送りました（自動でダウンロードを開始します）`
-            : `${urls.length} 件の URL を JDownloader 2 へ送りました（リンクグラバーを確認してください）`,
-          { type: 'success' },
-        );
-      } catch (e) {
-        console.error(LOG, e);
-        toast(`JDownloader 2 への送信に失敗しました: ${e.message}`, { type: 'error' });
-      }
-    }
+    Object.assign(ui, { openMenu, popup, toast });
 
     // ---- 操作：表示中のフォルダから ----
 
@@ -203,110 +393,19 @@
 
     function runCurrent(mode) {
       const st = fm?.state;
-      if (!st?.folder) return toast('フォルダ情報を読み込めていません。ページを再読み込みしてください。', { type: 'error' });
+      if (!st?.folder) return notify('フォルダ情報を読み込めていません。ページを再読み込みしてください。', 'error');
       if (st.fileView) return send([location.href.split(/[?#]/)[0]]);
       const rootCode = st.folder.code ?? fm.params?.contentId;
       if (mode === 'all') return send([gofileUrl(rootCode)]);
 
       const ids = new Set(st.selection || []);
       const entries = currentChildren().filter((c) => ids.has(c.id));
-      if (!entries.length) return toast('項目が選択されていません', { type: 'warning' });
+      if (!entries.length) return notify('項目が選択されていません', 'warning');
       const urls = entries
         .map((c) => (c.type === 'folder' ? (c.code ? gofileUrl(c.code) : null) : `${gofileUrl(rootCode)}#file=${c.id}`))
         .filter(Boolean);
-      if (urls.length < entries.length) toast(`URL が分からない項目 ${entries.length - urls.length} 件は送っていません`, { type: 'warning' });
+      if (urls.length < entries.length) notify(`URL が分からない項目 ${entries.length - urls.length} 件は送っていません`, 'warning');
       if (urls.length) return send(urls);
-    }
-
-    // ---- 操作：URL を指定して ----
-
-    function runUrls() {
-      popup.open({
-        title: 'URL を指定して JDownloader 2 へ送る',
-        size: '2xl',
-        content: `
-          <div class="space-y-4">
-            <div>
-              <label for="gm-urls" class="mb-1.5 block text-xs font-medium text-slate-400">GoFile の URL（1 行に 1 つ。ID だけでも可）</label>
-              <textarea id="gm-urls" rows="8" class="input font-mono text-sm" style="height:auto"
-                        placeholder="https://gofile.io/d/xxxxxx&#10;https://gofile.io/d/yyyyyy"></textarea>
-            </div>
-            <div>
-              <label for="gm-urls-pwd" class="mb-1.5 block text-xs font-medium text-slate-400">パスワード（任意）</label>
-              <input id="gm-urls-pwd" type="password" class="input" autocomplete="off" placeholder="JD2 に一緒に渡します">
-            </div>
-          </div>`,
-        actions: [
-          { label: 'キャンセル', variant: 'ghost' },
-          {
-            label: '送る',
-            variant: 'primary',
-            onClick: (h) => {
-              const ids = parseContentIds(document.getElementById('gm-urls')?.value ?? '');
-              if (!ids.length) return toast('GoFile の URL が見つかりません', { type: 'warning' });
-              const pwd = document.getElementById('gm-urls-pwd')?.value ?? '';
-              h.close();
-              send(ids.map(gofileUrl), pwd);
-            },
-          },
-        ],
-      });
-      setTimeout(() => document.getElementById('gm-urls')?.focus(), 50);
-    }
-
-    // ---- 設定画面 ----
-
-    function openSettings() {
-      popup.open({
-        title: 'GoFile → JD2 設定',
-        size: 'lg',
-        content: `
-          <form id="${FORM_ID}" class="space-y-4" onsubmit="return false">
-            <div>
-              <label for="gm-jdUrl" class="mb-1.5 block text-xs font-medium text-slate-400">JDownloader 2 の Click'n'Load アドレス</label>
-              <input id="gm-jdUrl" name="jdUrl" type="text" class="input" autocomplete="off"
-                     value="${escapeHtml(jdUrlSetting())}" placeholder="${DEFAULT_JD_URL}">
-              <p class="mt-1 text-xs text-slate-500">JD2 の初期値は ${DEFAULT_JD_URL}</p>
-            </div>
-            <div>
-              <label for="gm-dir" class="mb-1.5 block text-xs font-medium text-slate-400">保存先フォルダ</label>
-              <input id="gm-dir" name="dir" type="text" class="input" autocomplete="off"
-                     value="${escapeHtml(dirSetting())}" placeholder="例: D:\\Downloads\\GoFile">
-              <p class="mt-1 text-xs text-slate-500">空欄なら JD2 の既定の保存先。JD2 が動いている PC 上のフォルダを絶対パスで指定します。中には GoFile のフォルダ名ごとにフォルダを作ります</p>
-            </div>
-            <label class="flex items-center gap-2 text-sm text-slate-300">
-              <input name="autoStart" type="checkbox" ${autoStartSetting() ? 'checked' : ''}>
-              送ったらリンクグラバーを経由せずダウンロードを開始する
-            </label>
-            <button type="button" data-gm-act="test" class="w-full rounded-lg border border-sky-500 px-3 py-2 text-sky-400 hover:bg-sky-500/10">接続テスト</button>
-          </form>`,
-        actions: [
-          { label: 'キャンセル', variant: 'ghost' },
-          {
-            label: '保存',
-            variant: 'primary',
-            onClick: (h) => {
-              const els = document.forms[FORM_ID].elements;
-              GM_setValue('cfg.jdUrl', els.jdUrl.value.trim() || DEFAULT_JD_URL);
-              GM_setValue('cfg.autoStart', els.autoStart.checked);
-              GM_setValue('cfg.dir', els.dir.value.trim());
-              toast('設定を保存しました', { type: 'success' });
-              h.close();
-            },
-          },
-        ],
-      });
-      queueMicrotask(() => {
-        const form = document.forms[FORM_ID];
-        form?.querySelector('[data-gm-act="test"]')?.addEventListener('click', async () => {
-          try {
-            const ver = await jdCheck(form.elements.jdUrl.value.trim() || DEFAULT_JD_URL);
-            toast(`接続成功: JDownloader 2${ver ? `（ビルド ${ver}）` : ''}`, { type: 'success' });
-          } catch (e) {
-            toast(`接続失敗: ${e.message}`, { type: 'error' });
-          }
-        });
-      });
     }
 
     // ---- ツールバー ----
@@ -343,7 +442,7 @@
 
       const sendButton = iconButton(ICON.send, 'JD2 へ送る', (ev) => {
         const sel = fm?.state?.selection?.size ?? 0;
-        openMenu({
+        ui.openMenu({
           anchor: ev.currentTarget,
           placement: 'bottom-end',
           items: () => [
@@ -364,45 +463,53 @@
       return bar;
     }
 
-    // FileManager を捕まえられないまま一定時間たったら警告する
+    // ツールバーを置けるかどうかと、置けないときの理由を調べる。
+    //   problem は GoFile の仕様変更が疑われる理由だけ。読み込み中・パスワード入力待ちなど
+    //   正常に起こりうる「まだ置けない」状態では null にして、警告を出さない。
+    function barState() {
+      if (!fm) return { ready: false, problem: 'FileManager を捕捉できない' };
+      const st = fm.state;
+      if (!st || !('status' in st)) return { ready: false, problem: 'FileManager に state.status がない' };
+      if (fm.destroyed || st.status !== 'ready' || !fm.root?.isConnected) return { ready: false, problem: null };
+      const fileView = !!st.fileView;
+      const selector = fileView ? '#fm-root' : '#fm-toolbar';
+      const target = document.querySelector(selector);
+      if (!target) return { ready: false, problem: `${selector} が見つからない` };
+      return { ready: true, problem: null, fileView, target };
+    }
+
+    // GoFile のファイル管理部分があるのに、一定時間たってもツールバーを置けず、
+    // その理由が仕様変更らしいときに警告する
     let hookTimer = null;
     let hookWarned = false;
     function watchHook() {
-      if (fm || hookWarned || hookTimer || !document.querySelector('#fm-root')) return;
+      if (hookWarned || hookTimer || document.getElementById(BAR_ID) || !document.querySelector('#fm-root')) return;
       hookTimer = setTimeout(() => {
         hookTimer = null;
-        if (!fm && document.querySelector('#fm-root')) {
-          hookWarned = true;
-          showBanner(
-            'ページのファイル管理部分を取得できません',
-            'GoFile の仕様が変わった可能性があります。「URL を指定して送る」（Tampermonkey のメニュー）は使えます。'
-          );
-        }
+        if (document.getElementById(BAR_ID) || !document.querySelector('#fm-root')) return;
+        const { problem } = barState();
+        if (!problem) return;
+        hookWarned = true;
+        showBanner(
+          'ツールバーを表示できません',
+          `GoFile の仕様が変わった可能性があります（${problem}）。Tampermonkey のメニューの「URL を指定して JDownloader 2 へ送る」は使えます。`,
+        );
       }, 10000);
     }
 
     function mountBar() {
       watchHook();
       const existing = document.getElementById(BAR_ID);
-      const ready = fm && !fm.destroyed && fm.state?.status === 'ready' && fm.root?.isConnected;
-      if (!ready) {
+      const s = barState();
+      if (!s.ready) {
         existing?.remove();
         return;
       }
-      const fileView = !!fm.state.fileView;
-      if (existing && existing.dataset.view === String(fileView)) return;
+      if (existing && existing.dataset.view === String(s.fileView)) return;
       existing?.remove();
-      const target = fileView ? document.querySelector('#fm-root') : document.querySelector('#fm-toolbar');
-      if (!target) return;
-      const bar = buildBar(fileView);
-      bar.dataset.view = String(fileView);
-      fileView ? target.prepend(bar) : target.insertAdjacentElement('beforebegin', bar);
-    }
-
-    // Tampermonkey のメニューからも呼べるようにする（フォルダページ以外でも使える）
-    if (typeof GM_registerMenuCommand === 'function') {
-      GM_registerMenuCommand('URL を指定して JDownloader 2 へ送る', runUrls);
-      GM_registerMenuCommand('設定', openSettings);
+      const bar = buildBar(s.fileView);
+      bar.dataset.view = String(s.fileView);
+      s.fileView ? s.target.prepend(bar) : s.target.insertAdjacentElement('beforebegin', bar);
     }
 
     new MutationObserver(mountBar).observe(document.documentElement, { childList: true, subtree: true });
@@ -411,7 +518,10 @@
 
   const boot = () =>
     start().catch((e) =>
-      showBanner('起動できませんでした', `GoFile の仕様が変わった可能性があります。詳細: ${e?.message || e}`)
+      showBanner(
+        '起動できませんでした',
+        `GoFile の仕様が変わった可能性があります。Tampermonkey のメニューから簡易版の「URL を指定して JDownloader 2 へ送る」と「設定」は使えます。詳細: ${e?.message || e}`,
+      ),
     );
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });
   else boot();
