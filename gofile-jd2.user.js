@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.8.3
+// @version      0.9.0
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -19,6 +19,8 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
+// @grant        GM_addValueChangeListener
+// @grant        window.close
 // @grant        unsafeWindow
 // ==/UserScript==
 
@@ -29,6 +31,9 @@
   const BAR_ID = 'gm-jd-bar';
   const BANNER_ID = 'gm-jd-banner';
   const FORM_ID = 'gm-jd-settings';
+  const URL_FORM_ID = 'gm-jd-urlform';
+  const CHOOSE_FORM_ID = 'gm-jd-choose';
+  const PENDING_ID = 'gm-jd-pending';
 
   // ---------------------------------------------------------------------------
   // FileManager の捕捉（gofile-enhanced と同じ手法）
@@ -102,6 +107,18 @@
       return folderCode && entry.id ? `${gofileUrl(folderCode)}#file=${entry.id}` : null;
     },
 
+    // パスワード入力フォーム（form[data-fm="password"]）を送ったときに、GoFile がパスワードを覚える ID
+    passwordFormIds: () => [fm?.params?.contentId, fm?.state?.gate?.contentId],
+
+    // 表示中のフォルダ（またはファイル）のパスワードを探す ID
+    folderIds() {
+      const f = fm?.state?.folder;
+      return [f?.code, f?.id, fm?.params?.contentId, fm?.state?.folderId];
+    },
+
+    // 表示中のフォルダにパスワードがかかっているか（一覧の項目と同じ password フラグ）
+    isProtected: () => fm?.state?.folder?.password === true,
+
     // 単一ファイル表示のページの URL。ページの URL が /d/<コード> の形でなければ null
     //   ハッシュに #file=<ID> があれば残し、それ以外のクエリ・ハッシュは落とす。
     currentFileUrl() {
@@ -163,7 +180,18 @@
   const DEFAULT_JD_URL = 'http://127.0.0.1:9666';
   const jdUrlSetting = () => GM_getValue('cfg.jdUrl') ?? DEFAULT_JD_URL;
   const autoStartSetting = () => GM_getValue('cfg.autoStart') ?? true;
-  const dirSetting = () => String(GM_getValue('cfg.dir') ?? '').trim();
+  const closeTabSetting = () => GM_getValue('cfg.closeTab') ?? false;
+
+  // 保存先フォルダの一覧（1 行に 1 つ。| で区切っても可）。先頭が既定。空なら JD2 の既定の保存先。
+  const parseDirs = (text) => [...new Set(String(text ?? '').split(/\r?\n|\|/).map((s) => s.trim()).filter(Boolean))];
+  //   v0.8 までは 1 つだけを cfg.dir に持っていたので、cfg.dirs が無ければそちらを読む。
+  function dirsSetting() {
+    const v = GM_getValue('cfg.dirs');
+    return Array.isArray(v) ? parseDirs(v.join('\n')) : parseDirs(GM_getValue('cfg.dir'));
+  }
+
+  // 送り方を選ばずに送るときの保存先と開始方法
+  const defaultSendOptions = () => ({ dir: dirsSetting()[0] ?? '', autoStart: autoStartSetting() });
 
   // Click'n'Load アドレスを整える。空なら既定値、スキームが無ければ http:// を補う。
   //   http / https の URL として読めなければ null。
@@ -182,11 +210,58 @@
   const INVALID_JD_URL = "Click'n'Load アドレスの形が正しくありません（例: http://127.0.0.1:9666）";
 
   // jdUrl は normalizeJdUrl を通した値を渡す
-  function saveSettings({ jdUrl, autoStart, dir }) {
+  function saveSettings({ jdUrl, autoStart, dirs, closeTab }) {
     GM_setValue('cfg.jdUrl', jdUrl || DEFAULT_JD_URL);
     GM_setValue('cfg.autoStart', !!autoStart);
-    GM_setValue('cfg.dir', String(dir ?? '').trim());
+    GM_setValue('cfg.dirs', parseDirs(dirs));
+    GM_setValue('cfg.closeTab', !!closeTab);
   }
+
+  // ---------------------------------------------------------------------------
+  // GoFile のページで入れたフォルダのパスワード
+  //   GoFile 自身はハッシュ（sha256）しか残さないが、JD2 の GoFile プラグインは平文を受け取るので、
+  //   パスワード入力フォームの送信を横から読んで平文を取っておく（Tampermonkey の保存領域に入る）。
+  //   GoFile と同じく 24 時間で忘れる。キーは GoFile がパスワードを覚えるときと同じ ID。
+  // ---------------------------------------------------------------------------
+  const PW_KEY = 'pw';
+  const PW_TTL = 24 * 60 * 60 * 1000;
+  const PW_MAX = 200;
+  let lastPassword = null; // このタブで最後に入れたもの（ID が合わないサブフォルダ用）
+
+  function loadPasswords() {
+    const now = Date.now();
+    const all = GM_getValue(PW_KEY);
+    if (!all || typeof all !== 'object') return {};
+    return Object.fromEntries(Object.entries(all).filter(([, e]) => typeof e?.p === 'string' && now - e.t < PW_TTL));
+  }
+
+  function rememberPassword(ids, password) {
+    if (!password) return;
+    lastPassword = password;
+    const all = loadPasswords();
+    const t = Date.now();
+    for (const id of new Set(ids)) if (typeof id === 'string' && id) all[id] = { p: password, t };
+    const kept = Object.entries(all).sort((a, b) => b[1].t - a[1].t).slice(0, PW_MAX);
+    GM_setValue(PW_KEY, Object.fromEntries(kept));
+  }
+
+  // 表示中のフォルダのパスワード。分からなければ ''
+  function pagePassword() {
+    const all = loadPasswords();
+    for (const id of gofile.folderIds()) if (id && all[id]) return all[id].p;
+    return gofile.isProtected() && lastPassword ? lastPassword : '';
+  }
+
+  // GoFile のパスワード入力フォームの送信。GoFile の処理より先に読むため capture で受ける。
+  document.addEventListener(
+    'submit',
+    (ev) => {
+      const form = ev.target?.closest?.('form[data-fm="password"]');
+      const value = form?.elements?.password?.value;
+      if (value) rememberPassword(gofile.passwordFormIds(), value);
+    },
+    true,
+  );
 
   // ---------------------------------------------------------------------------
   // 小物
@@ -228,7 +303,9 @@
         data,
         timeout,
         onload: (r) => resolve({ ok: r.status >= 200 && r.status < 300, status: r.status, text: r.responseText || '' }),
-        onerror: () => reject(new Error('接続できません（JDownloader 2 は起動していますか？ アドレスは正しいですか？）')),
+        // offline: JD2 に届かなかった（未送信として取っておく対象）
+        onerror: () =>
+          reject(Object.assign(new Error('接続できません（JDownloader 2 は起動していますか？ アドレスは正しいですか？）'), { offline: true })),
         ontimeout: () =>
           reject(new Error('JDownloader 2 から応答がありません（JD2 に「許可」の確認が出ていないか見てください）')),
       });
@@ -249,6 +326,7 @@
   //   成功時の応答本文は JD2 のバージョンで異なる（空の 204 もある）ので、2xx なら成功とみなす。
   //   source: JD2 の許可ダイアログはここ（Referer が無いとき）からサイト名を取り、一度「許可」すれば記憶する。
   //           GM_xmlhttpRequest は Referer を送らないので、これが無いと毎回ダイアログが出る。
+  //   autoStart: 送ったらリンクグラバーを経由せずダウンロードを開始する
   //   dir: 保存先フォルダ。空なら JD2 の既定の保存先。
   //        JD2 は dir をパッケージの保存先としてそのまま上書きする（パッケージャーの後に適用され、
   //        「フォルダ構成を受継ぐ」などのサブフォルダ分けが消える）。そこで末尾に <jd:packagename> を付け、
@@ -256,10 +334,9 @@
   //        JD2 が展開する。<jd:subfolderbyplugin> はその時点では展開されないので使えない。
   //        利用者が自分で <jd:…> を書いたときはそのまま渡す。
   //   タイムアウト: 初回は JD2 が許可ダイアログへの応答を待ってから返すことがあるので、長めにとる。
-  async function jdAdd(urls, password) {
+  async function jdAdd(urls, { password, dir, autoStart }) {
     const body = new URLSearchParams({ urls: urls.join('\n'), referer: location.href, source: location.href });
-    if (autoStartSetting()) body.set('autostart', '1');
-    const dir = dirSetting();
+    if (autoStart) body.set('autostart', '1');
     if (dir) body.set('dir', /<jd:/i.test(dir) ? dir : `${dir.replace(/[\\/]+$/, '')}\\<jd:packagename>`);
     if (password) {
       const lines = urls.map(() => password).join('\n');
@@ -274,38 +351,208 @@
   // 送信
   // ---------------------------------------------------------------------------
   let sending = false;
+  const BUSY = '前の送信がまだ終わっていません。少し待ってください';
 
-  async function send(urls, password) {
-    if (sending) return notify('前の送信がまだ終わっていません。少し待ってください', 'warning');
+  // 送れたあとにこのタブを閉じる。トーストを少し見せてから閉じる。
+  //   スクリプトが開いたのではないタブはブラウザが閉じさせないことがあるので、閉じられなければ知らせる。
+  function closeTabSoon() {
+    setTimeout(() => {
+      window.close();
+      setTimeout(() => {
+        if (!window.closed) notify('このタブを閉じられませんでした（ブラウザに止められました）', 'warning');
+      }, 500);
+    }, 1200);
+  }
+
+  // opts: { password, dir, autoStart, closeTab }。省略したものは設定の値（closeTab は閉じない）。
+  async function send(urls, opts = {}) {
+    if (sending) return notify(BUSY, 'warning');
+    const o = { password: '', closeTab: false, ...defaultSendOptions(), ...opts };
     sending = true;
     notify(`${urls.length} 件の URL を JDownloader 2 へ送信中…`);
     try {
-      await jdAdd(urls, password);
+      await jdAdd(urls, o);
       notify(
-        autoStartSetting()
-          ? `${urls.length} 件の URL を JDownloader 2 へ送りました（自動でダウンロードを開始します）`
-          : `${urls.length} 件の URL を JDownloader 2 へ送りました（リンクグラバーを確認してください）`,
+        `${urls.length} 件の URL を JDownloader 2 へ送りました。${o.password ? 'パスワードも渡しています。' : ''}` +
+          (o.autoStart ? '自動でダウンロードを開始します' : 'リンクグラバーを確認してください'),
         'success',
       );
+      if (o.closeTab) closeTabSoon();
     } catch (e) {
       console.error(LOG, e);
-      notify(`JDownloader 2 への送信に失敗しました: ${e.message}`, 'error');
+      if (e.offline) {
+        enqueue(urls, o);
+        notify(
+          `JDownloader 2 に接続できないため、${urls.length} 件の URL を未送信として取っておきました。` +
+            'JD2 を起動してから「未送信」（ツールバー、または Tampermonkey のメニュー）から送り直してください',
+          'error',
+        );
+      } else {
+        notify(`JDownloader 2 への送信に失敗しました: ${e.message}`, 'error');
+      }
     } finally {
       sending = false;
     }
   }
 
   // テキストから URL を取り出して送る。送るものが無ければ false。
-  function sendText(text, password) {
+  function sendText(text, opts) {
     const { urls, skipped } = parseGofileUrls(text);
     if (!urls.length) {
       notify('GoFile の URL が見つかりません', 'warning');
       return false;
     }
     if (skipped) notify(`URL として読み取れなかった行 ${skipped} 件は送っていません`, 'warning');
-    send(urls, password);
+    send(urls, opts);
     return true;
   }
+
+  // ---------------------------------------------------------------------------
+  // 未送信の URL
+  //   JD2 に接続できなかった（起動していないなど）ときの送信を取っておき、あとでまとめて送り直す。
+  //   JD2 が応答して断った場合や、応答が無かった（タイムアウト。JD2 の許可ダイアログ待ちのことが多く、
+  //   許可すれば追加される）場合は取っておかない。
+  // ---------------------------------------------------------------------------
+  const QUEUE_KEY = 'queue';
+  let onQueueChange = () => {}; // ツールバーができたら差し替える
+
+  function loadQueue() {
+    const q = GM_getValue(QUEUE_KEY);
+    return Array.isArray(q) ? q.filter((e) => e && Array.isArray(e.urls) && e.urls.length) : [];
+  }
+
+  function saveQueue(q) {
+    GM_setValue(QUEUE_KEY, q);
+    onQueueChange();
+  }
+
+  const queueUrlCount = (q = loadQueue()) => q.reduce((n, e) => n + e.urls.length, 0);
+
+  function enqueue(urls, { password, dir, autoStart }) {
+    const entry = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, at: Date.now(), urls, password: password || '', dir: dir || '', autoStart: !!autoStart };
+    const key = (e) => JSON.stringify([e.urls, e.password, e.dir, e.autoStart]);
+    const q = loadQueue();
+    if (!q.some((e) => key(e) === key(entry))) q.push(entry);
+    saveQueue(q);
+  }
+
+  // 取っておいた送信を古い順に送り直す。JD2 にまだ接続できなければそこでやめる。
+  async function resendQueue() {
+    if (sending) return notify(BUSY, 'warning');
+    const q = loadQueue();
+    if (!q.length) return notify('未送信の URL はありません', 'success');
+    sending = true;
+    notify(`未送信の ${queueUrlCount(q)} 件の URL を JDownloader 2 へ送信中…`);
+    let sent = 0;
+    let error = null;
+    try {
+      for (const e of q) {
+        try {
+          await jdAdd(e.urls, e);
+          sent += e.urls.length;
+          saveQueue(loadQueue().filter((x) => x.id !== e.id));
+        } catch (err) {
+          console.error(LOG, err);
+          error = err;
+          if (err.offline) break;
+        }
+      }
+    } finally {
+      sending = false;
+    }
+    const left = queueUrlCount();
+    if (!error) return notify(`未送信だった ${sent} 件の URL を JDownloader 2 へ送りました`, 'success');
+    notify(
+      `${sent ? `${sent} 件は送りましたが、` : ''}残りの ${left} 件を送れませんでした: ${error.message}`,
+      'error',
+    );
+  }
+
+  function discardQueue() {
+    saveQueue([]);
+    notify('未送信の URL を破棄しました', 'success');
+  }
+
+  // 未送信の一覧。GoFile の画面部品が無いときは confirm で送り直すかだけを聞く。
+  function openQueue() {
+    const q = loadQueue();
+    if (!q.length) return notify('未送信の URL はありません', 'success');
+    const count = queueUrlCount(q);
+    if (!ui.popup) {
+      if (confirm(`GoFile → JD2: 未送信の URL が ${count} 件あります。JDownloader 2 へ送り直しますか？`)) resendQueue();
+      return;
+    }
+    const SHOW = 5;
+    const rows = q
+      .map((e) => {
+        const meta = [
+          new Date(e.at).toLocaleString('ja-JP'),
+          `保存先: ${e.dir || 'JD2 の既定'}`,
+          e.autoStart ? '自動で開始' : 'リンクグラバーで止める',
+          ...(e.password ? ['パスワードあり'] : []),
+        ];
+        const urls = e.urls.slice(0, SHOW).map((u) => `<li class="truncate">${escapeHtml(u)}</li>`).join('');
+        const more = e.urls.length > SHOW ? `<li class="text-slate-500">ほか ${e.urls.length - SHOW} 件</li>` : '';
+        return `<li class="space-y-1"><div class="text-xs text-slate-400">${escapeHtml(meta.join(' ・ '))}</div>
+                  <ul class="font-mono text-xs text-slate-300">${urls}${more}</ul></li>`;
+      })
+      .join('');
+    ui.popup.open({
+      title: `未送信の URL（${count} 件）`,
+      size: '2xl',
+      content: `<p class="mb-3 text-sm text-slate-400">JDownloader 2 に接続できなかったときの送信です。JD2 を起動してから送り直してください。</p>
+                <ul class="space-y-3">${rows}</ul>`,
+      actions: [
+        {
+          label: 'すべて破棄',
+          variant: 'danger',
+          onClick: () => {
+            if (!confirm(`未送信の URL ${count} 件をすべて破棄しますか？`)) return false;
+            discardQueue();
+          },
+        },
+        { label: '閉じる', variant: 'ghost' },
+        { label: '送り直す', variant: 'primary', onClick: () => void resendQueue() },
+      ],
+    });
+  }
+
+  // 別のタブで未送信が増減したときも、ツールバーの表示を合わせる
+  if (typeof GM_addValueChangeListener === 'function') {
+    GM_addValueChangeListener(QUEUE_KEY, (_name, _old, _new, remote) => {
+      if (remote) onQueueChange();
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 送り方の入力欄（保存先・開始方法・タブを閉じるか）。URL 指定と「保存先などを選んで送る」で使う。
+  // ---------------------------------------------------------------------------
+  function sendOptionsHtml({ withCloseTab }) {
+    const dirs = dirsSetting();
+    const options = [...dirs.map((d) => [d, d]), ['', 'JD2 の既定の保存先']]
+      .map(([v, l], i) => `<option value="${escapeHtml(v)}" ${i === 0 ? 'selected' : ''}>${escapeHtml(l)}</option>`)
+      .join('');
+    return `
+      <div>
+        <label for="gm-send-dir" class="mb-1.5 block text-xs font-medium text-slate-400">保存先フォルダ</label>
+        <select id="gm-send-dir" name="dir" class="input">${options}</select>
+        ${dirs.length ? '' : '<p class="mt-1 text-xs text-slate-500">保存先は ⚙ の設定で複数登録できます</p>'}
+      </div>
+      <label class="flex items-center gap-2 text-sm text-slate-300">
+        <input name="autoStart" type="checkbox" ${autoStartSetting() ? 'checked' : ''}>
+        リンクグラバーを経由せずダウンロードを開始する
+      </label>
+      ${
+        withCloseTab
+          ? `<label class="flex items-center gap-2 text-sm text-slate-300">
+               <input name="closeTab" type="checkbox" ${closeTabSetting() ? 'checked' : ''}>
+               送れたらこのタブを閉じる（このフォルダ全体・このファイルを送るとき）
+             </label>`
+          : ''
+      }`;
+  }
+
+  const readSendOptions = (els) => ({ dir: els.dir?.value ?? '', autoStart: !!els.autoStart?.checked, closeTab: !!els.closeTab?.checked });
 
   // ---------------------------------------------------------------------------
   // 操作：URL を指定して
@@ -316,14 +563,14 @@
         'GoFile の URL を貼り付けてください（複数ならスペース区切り。ID だけでも可）\n' +
           '※ GoFile の画面部品を読み込めないため簡易版です。パスワードは渡せません。',
       );
-      if (text != null) sendText(text.split(/\s+/).join('\n'), '');
+      if (text != null) sendText(text.split(/\s+/).join('\n'));
       return;
     }
     ui.popup.open({
       title: 'URL を指定して JDownloader 2 へ送る',
       size: '2xl',
       content: `
-        <div class="space-y-4">
+        <form id="${URL_FORM_ID}" class="space-y-4" onsubmit="return false">
           <div>
             <label for="gm-urls" class="mb-1.5 block text-xs font-medium text-slate-400">GoFile の URL（1 行に 1 つ。ID だけでも可。Ctrl+Enter で送る）</label>
             <textarea id="gm-urls" rows="8" class="input font-mono text-sm" style="height:auto"
@@ -333,16 +580,20 @@
             <label for="gm-urls-pwd" class="mb-1.5 block text-xs font-medium text-slate-400">パスワード（任意）</label>
             <input id="gm-urls-pwd" type="password" class="input" autocomplete="off" placeholder="JD2 に一緒に渡します">
           </div>
-        </div>`,
+          ${sendOptionsHtml({ withCloseTab: false })}
+        </form>`,
       actions: [
         { label: 'キャンセル', variant: 'ghost' },
         {
           label: '送る',
           variant: 'primary',
-          onClick: (h) => {
-            const text = document.getElementById('gm-urls')?.value ?? '';
-            const pwd = document.getElementById('gm-urls-pwd')?.value ?? '';
-            if (sendText(text, pwd)) h.close();
+          // false を返すとポップアップを閉じない（送るものが無いときは開いたままにする）
+          onClick: () => {
+            const els = document.forms[URL_FORM_ID]?.elements;
+            if (!els) return notify('入力欄を読み取れませんでした。送っていません', 'error');
+            const text = els['gm-urls']?.value ?? '';
+            const password = els['gm-urls-pwd']?.value ?? '';
+            return sendText(text, { ...readSendOptions(els), password });
           },
         },
       ],
@@ -416,12 +667,13 @@
     if (input == null) return;
     const jdUrl = normalizeJdUrl(input);
     if (!jdUrl) return notify(`${INVALID_JD_URL}。保存していません`, 'error');
-    const dir = prompt('保存先フォルダ（空欄なら JD2 の既定の保存先）', dirSetting());
-    if (dir == null) return;
+    const dirs = prompt('保存先フォルダ（複数なら | で区切る。先頭が既定。空欄なら JD2 の既定の保存先）', dirsSetting().join(' | '));
+    if (dirs == null) return;
     const autoStart = confirm(
       '送ったらリンクグラバーを経由せずダウンロードを開始しますか？\n（OK = 開始する / キャンセル = リンクグラバーで止める）',
     );
-    saveSettings({ jdUrl, autoStart, dir });
+    // タブを閉じる設定はツールバーからの送信にしか効かないので、簡易版では変えない
+    saveSettings({ jdUrl, autoStart, dirs, closeTab: closeTabSetting() });
     const { ok, message } = await testConnection(jdUrlSetting());
     notify(`設定を保存しました。${message}`, ok ? 'success' : 'error');
   }
@@ -440,14 +692,18 @@
             <p class="mt-1 text-xs text-slate-500">JD2 の初期値は ${DEFAULT_JD_URL}（http:// は省略可）</p>
           </div>
           <div>
-            <label for="gm-dir" class="mb-1.5 block text-xs font-medium text-slate-400">保存先フォルダ</label>
-            <input id="gm-dir" name="dir" type="text" class="input" autocomplete="off"
-                   value="${escapeHtml(dirSetting())}" placeholder="例: D:\\Downloads\\GoFile">
-            <p class="mt-1 text-xs text-slate-500">空欄なら JD2 の既定の保存先。JD2 が動いている PC 上のフォルダを絶対パスで指定します。中には GoFile のフォルダ名ごとにフォルダを作ります</p>
+            <label for="gm-dirs" class="mb-1.5 block text-xs font-medium text-slate-400">保存先フォルダ（1 行に 1 つ。1 行目が既定）</label>
+            <textarea id="gm-dirs" name="dirs" rows="3" class="input font-mono text-sm" style="height:auto"
+                      placeholder="例: D:\\Downloads\\GoFile">${escapeHtml(dirsSetting().join('\n'))}</textarea>
+            <p class="mt-1 text-xs text-slate-500">空欄なら JD2 の既定の保存先。JD2 が動いている PC 上のフォルダを絶対パスで指定します。中には GoFile のフォルダ名ごとにフォルダを作ります。2 つ目からは「保存先などを選んで送る…」で選べます</p>
           </div>
           <label class="flex items-center gap-2 text-sm text-slate-300">
             <input name="autoStart" type="checkbox" ${autoStartSetting() ? 'checked' : ''}>
             送ったらリンクグラバーを経由せずダウンロードを開始する
+          </label>
+          <label class="flex items-center gap-2 text-sm text-slate-300">
+            <input name="closeTab" type="checkbox" ${closeTabSetting() ? 'checked' : ''}>
+            「このフォルダ全体」「このファイル」で送れたらタブを閉じる
           </label>
           <button type="button" data-gm-act="test" class="w-full rounded-lg border border-sky-500 px-3 py-2 text-sky-400 hover:bg-sky-500/10">接続テスト</button>
         </form>`,
@@ -456,17 +712,17 @@
         {
           label: '保存',
           variant: 'primary',
-          onClick: (h) => {
+          // false を返すとポップアップを閉じない（アドレスが正しくないときは開いたままにする）
+          onClick: () => {
             const els = document.forms[FORM_ID]?.elements;
-            if (!els) {
-              notify('設定画面の入力欄を読み取れませんでした。保存していません', 'error');
-              return h.close();
-            }
+            if (!els) return notify('設定画面の入力欄を読み取れませんでした。保存していません', 'error');
             const jdUrl = normalizeJdUrl(els.jdUrl.value);
-            if (!jdUrl) return notify(INVALID_JD_URL, 'error');
-            saveSettings({ jdUrl, autoStart: els.autoStart.checked, dir: els.dir.value });
+            if (!jdUrl) {
+              notify(INVALID_JD_URL, 'error');
+              return false;
+            }
+            saveSettings({ jdUrl, autoStart: els.autoStart.checked, dirs: els.dirs.value, closeTab: els.closeTab.checked });
             notify('設定を保存しました', 'success');
-            h.close();
           },
         },
       ],
@@ -476,6 +732,7 @@
   // Tampermonkey のメニューからも呼べるようにする（フォルダページ以外でも、GoFile の画面部品を読めなくても使える）
   if (typeof GM_registerMenuCommand === 'function') {
     GM_registerMenuCommand('URL を指定して JDownloader 2 へ送る', runUrls);
+    GM_registerMenuCommand('未送信の URL を送り直す', openQueue);
     GM_registerMenuCommand('設定', openSettings);
   }
 
@@ -499,31 +756,83 @@
     const NOT_LOADED = 'フォルダ情報を読み込めていません。ページを再読み込みしてください。';
     const NO_CODE = 'このページの GoFile のコードが分かりません。GoFile の仕様が変わった可能性があります。';
 
+    // どれも opts（保存先・開始方法・タブを閉じるか）を省くと設定の値で送る。
+    // ページでパスワードを入れていれば、それも渡す。
+
     // 単一ファイルのページ：表示中のファイル
-    function sendCurrentFile() {
+    function sendCurrentFile(opts = {}) {
       if (!gofile.isLoaded()) return notify(NOT_LOADED, 'error');
       const url = gofile.currentFileUrl();
       if (!url) return notify(NO_CODE, 'error');
-      send([url]);
+      send([url], { password: pagePassword(), closeTab: closeTabSetting(), ...opts });
     }
 
     // フォルダのページ：表示中のフォルダ全体
-    function sendCurrentFolder() {
+    function sendCurrentFolder(opts = {}) {
       if (!gofile.isLoaded()) return notify(NOT_LOADED, 'error');
       const code = gofile.folderCode();
       if (!code) return notify(NO_CODE, 'error');
-      send([gofileUrl(code)]);
+      send([gofileUrl(code)], { password: pagePassword(), closeTab: closeTabSetting(), ...opts });
     }
 
-    // フォルダのページ：選択した項目
-    function sendSelected() {
+    // フォルダのページ：選択した項目（続けてほかの項目も選ぶことがあるので、タブは閉じない）
+    function sendSelected(opts = {}) {
       if (!gofile.isLoaded()) return notify(NOT_LOADED, 'error');
       const entries = gofile.selectedEntries();
       if (!entries.length) return notify('項目が選択されていません', 'warning');
       const folderCode = gofile.folderCode();
       const urls = entries.map((c) => gofile.entryUrl(c, folderCode)).filter(Boolean);
       if (urls.length < entries.length) notify(`URL が分からない項目 ${entries.length - urls.length} 件は送っていません`, 'warning');
-      if (urls.length) send(urls);
+      if (urls.length) send(urls, { password: pagePassword(), ...opts, closeTab: false });
+    }
+
+    // 送るもの・保存先・開始方法・タブを閉じるかを選んで送る
+    function openChooser(fileView) {
+      const sel = gofile.selectionCount();
+      const targets = fileView
+        ? [['file', 'このファイル', false]]
+        : [
+            ['selected', `選択した項目（${sel}）`, !sel],
+            ['folder', 'このフォルダ全体', false],
+          ];
+      const initial = fileView ? 'file' : sel ? 'selected' : 'folder';
+      const radios = targets
+        .map(
+          ([v, l, disabled]) => `<label class="flex items-center gap-2 text-sm ${disabled ? 'text-slate-500' : 'text-slate-300'}">
+             <input type="radio" name="target" value="${v}" ${v === initial ? 'checked' : ''} ${disabled ? 'disabled' : ''}> ${escapeHtml(l)}
+           </label>`,
+        )
+        .join('');
+      const password = pagePassword();
+      ui.popup.open({
+        title: '保存先などを選んで JDownloader 2 へ送る',
+        size: 'lg',
+        content: `
+          <form id="${CHOOSE_FORM_ID}" class="space-y-4" onsubmit="return false">
+            <div class="space-y-1">
+              <div class="mb-1.5 text-xs font-medium text-slate-400">送るもの</div>
+              ${radios}
+              ${password ? '<p class="mt-1 text-xs text-slate-500">このページで入れたパスワードも一緒に渡します</p>' : ''}
+            </div>
+            ${sendOptionsHtml({ withCloseTab: true })}
+          </form>`,
+        actions: [
+          { label: 'キャンセル', variant: 'ghost' },
+          {
+            label: '送る',
+            variant: 'primary',
+            onClick: () => {
+              const els = document.forms[CHOOSE_FORM_ID]?.elements;
+              if (!els) return notify('入力欄を読み取れませんでした。送っていません', 'error');
+              const opts = readSendOptions(els);
+              const target = els.target?.value;
+              if (target === 'file') sendCurrentFile(opts);
+              else if (target === 'folder') sendCurrentFolder(opts);
+              else if (target === 'selected') sendSelected(opts);
+            },
+          },
+        ],
+      });
     }
 
     // ---- ツールバー ----
@@ -558,28 +867,49 @@
       const spacer = document.createElement('span');
       spacer.className = 'flex-1';
 
+      // 未送信の URL があるときだけ出す。件数は updatePending で合わせる。
+      const pending = document.createElement('button');
+      pending.type = 'button';
+      pending.id = PENDING_ID;
+      pending.className = 'btn-secondary rounded-lg px-2.5 py-1.5 text-sm text-amber-400';
+      pending.title = 'JDownloader 2 に接続できず、まだ送れていない URL';
+      pending.addEventListener('click', openQueue);
+
       const sendButton = iconButton(ICON.send, 'JD2 へ送る', (ev) => {
         const sel = gofile.selectionCount();
+        const left = queueUrlCount();
         ui.openMenu({
           anchor: ev.currentTarget,
           placement: 'bottom-end',
           items: () => [
             { type: 'label', label: 'JDownloader 2 へ送る' },
             ...(fileView
-              ? [{ label: 'このファイル', icon: 'file', onClick: sendCurrentFile }]
+              ? [{ label: 'このファイル', icon: 'file', onClick: () => sendCurrentFile() }]
               : [
-                  { label: `選択した項目${sel ? `（${sel}）` : ''}`, icon: 'list-checks', disabled: !sel, onClick: sendSelected },
-                  { label: 'このフォルダ全体', icon: 'folder-tree', onClick: sendCurrentFolder },
+                  { label: `選択した項目${sel ? `（${sel}）` : ''}`, icon: 'list-checks', disabled: !sel, onClick: () => sendSelected() },
+                  { label: 'このフォルダ全体', icon: 'folder-tree', onClick: () => sendCurrentFolder() },
                 ]),
-            { label: 'URL を指定して…', icon: 'link', onClick: runUrls },
+            { label: 'URL を指定して…', icon: 'link', onClick: () => runUrls() },
+            { type: 'separator' },
+            { label: '保存先などを選んで送る…', icon: 'folder-cog', onClick: () => openChooser(fileView) },
+            ...(left ? [{ label: `未送信の URL（${left}）…`, icon: 'rotate-cw', onClick: () => openQueue() }] : []),
           ],
         });
       }, true);
 
-      row.append(title, spacer, sendButton, iconButton(ICON.gear, '設定', openSettings));
+      row.append(title, spacer, pending, sendButton, iconButton(ICON.gear, '設定', openSettings));
       bar.appendChild(row);
+      updatePending(pending);
       return bar;
     }
+
+    function updatePending(el = document.getElementById(PENDING_ID)) {
+      if (!el) return;
+      const n = queueUrlCount();
+      el.style.display = n ? '' : 'none'; // GoFile のボタンのクラスが display を決めるので hidden 属性は効かない
+      el.textContent = `未送信 ${n}`;
+    }
+    onQueueChange = () => updatePending();
 
     // GoFile のファイル管理部分があるのに、一定時間たってもツールバーを置けず、
     // その理由が仕様変更らしいときに警告する
