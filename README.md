@@ -8,21 +8,23 @@ GoFile のページにツールバーを追加して、GoFile の URL を JDownl
 
 > v0.3 までは「GoFile → Motrix」（リポジトリ名 gofile-motrix）として、Motrix（aria2 RPC）へ送るスクリプトでした。v0.5 で Motrix 対応を外し、名前を変えています。古い「GoFile → Motrix」は自動では更新されないので、Tampermonkey で削除してから下の手順で入れ直してください。
 
+> [!IMPORTANT]
+> GoFile・JDownloader の公式ツールではありません。GoFile の利用規約を守ってお使いください。
+
+## 必要なもの
+
+- [JDownloader 2](https://jdownloader.org/)（JD2）。Click'n'Load は初期設定で有効です。
+- Tampermonkey か Violentmonkey を入れたブラウザ
+
 ## インストール
 
-1. JDownloader 2 を入れて起動しておきます。Click'n'Load は初期設定で有効です。
-2. Tampermonkey か Violentmonkey を入れた状態で、[gofile-jd2.user.js](https://raw.githubusercontent.com/Hoyomaru/gofile-jd2/main/gofile-jd2.user.js) を開いてインストールします（以降は自動で更新されます）。
+1. JDownloader 2 を起動しておきます。
+2. [gofile-jd2.user.js](https://raw.githubusercontent.com/Hoyomaru/gofile-jd2/main/gofile-jd2.user.js) を開いてインストールします。
 3. GoFile のページでツールバーの ⚙ を開き、「接続テスト」を押して JD2 につながるか確認します。JD2 を別のポートや別の PC で動かしているときは、ここでアドレスを変えます。
 
-インストール直後や更新直後は、GitHub 側のキャッシュで数分ほど古い版が入ることがあります。そのときは少し待ってから入れ直してください。
+### 更新
 
-## 設定
-
-ツールバーの ⚙（または Tampermonkey のメニューの「設定」）で変えられます。
-
-- **Click'n'Load アドレス**：JD2 の受け口。初期値は `http://127.0.0.1:9666`。`http://` を省くと補って保存します。URL として読めない値は保存しません。
-- **保存先フォルダ**：JD2 が動いている PC 上のフォルダを絶対パスで指定します（例 `D:\Downloads\GoFile`）。空欄なら JD2 の既定の保存先です。指定したフォルダの中に、GoFile のフォルダ名ごとのフォルダを作って保存します（JD2 のパッケージ名 `<jd:packagename>` を末尾に付けて渡します。自分で `<jd:…>` を含めて書いた場合はそのまま渡します）。JD2 のパッケージャーに保存先のルールがあると、そちらが優先されることがあります。
-- **送ったらリンクグラバーを経由せずダウンロードを開始する**：初期値はオン。オフにするとリンクグラバーで止まり、確認してから開始できます。
+Tampermonkey / Violentmonkey が自動で更新します。インストール直後や更新直後は、GitHub 側のキャッシュで数分ほど古い版が入ることがあります。そのときは少し待ってから入れ直してください。
 
 ## 使い方
 
@@ -39,6 +41,14 @@ GoFile のページにツールバーを追加して、GoFile の URL を JDownl
 
 初回の送信時だけ JD2 に「外部アプリケーションがリンクを追加しようとしています」と出ます。「許可」を押すと gofile.io が記憶され、以後は出ません。このダイアログに長く答えないと「JDownloader 2 から応答がありません」と出ることがありますが、許可すればリンクは追加されます。
 
+### 設定
+
+ツールバーの ⚙（または Tampermonkey のメニューの「設定」）で変えられます。
+
+- **Click'n'Load アドレス**：JD2 の受け口。初期値は `http://127.0.0.1:9666`。`http://` を省くと補って保存します。URL として読めない値は保存しません。
+- **保存先フォルダ**：JD2 が動いている PC 上のフォルダを絶対パスで指定します（例 `D:\Downloads\GoFile`）。空欄なら JD2 の既定の保存先です。指定したフォルダの中に、GoFile のフォルダ名ごとのフォルダを作って保存します（JD2 のパッケージ名 `<jd:packagename>` を末尾に付けて渡します。自分で `<jd:…>` を含めて書いた場合はそのまま渡します）。JD2 のパッケージャーに保存先のルールがあると、そちらが優先されることがあります。
+- **送ったらリンクグラバーを経由せずダウンロードを開始する**：初期値はオン。オフにするとリンクグラバーで止まり、確認してから開始できます。
+
 ## 警告表示
 
 GoFile 側の仕様変更などで動かなくなったときは、画面右下に赤い警告が出ます。次のような場合です。
@@ -46,7 +56,9 @@ GoFile 側の仕様変更などで動かなくなったときは、画面右下�
 - **起動できませんでした**：GoFile の内部モジュール（メニュー・ポップアップ・トースト通知）を読み込めない。ツールバーは出ません。Tampermonkey のメニューの「URL を指定して JDownloader 2 へ送る」と「設定」は、ブラウザの入力ダイアログを使う簡易版で動きます（URL はスペース区切りで入力します。パスワードは渡せません）。
 - **ツールバーを表示できません**：ページのファイル管理部分を取得できない、またはツールバーを置く場所が見つからない。警告には原因（例 `#fm-toolbar が見つからない`）が出ます。Tampermonkey のメニューの「URL を指定して JDownloader 2 へ送る」は普段通り使えます。
 
-## 保守メモ：GoFile への依存点
+## 開発メモ
+
+### GoFile への依存点
 
 GoFile の内部の仕組みを使っているので、GoFile の更新で壊れることがあります。壊れたときは次の順に調べます。FileManager と GoFile の DOM を読む処理は、`gofile-jd2.user.js` 冒頭の `gofile` オブジェクトにまとめてあるので、まずそこを直します。
 
@@ -66,11 +78,11 @@ GoFile の内部の仕組みを使っているので、GoFile の更新で壊れ
 - GoFile のスクリプトで `loadSeq` を検索し、FileManager のコンストラクタと `state` の中身を確かめる。
 - Console で `[GoFile→JD2]` の出力を見る。
 
-## ライセンスと出典
+## ライセンス
 
-MIT ライセンスです（[LICENSE](LICENSE)）。次の 2 つのプロジェクト（いずれも MIT）を元にしています。元プロジェクトの著作権表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にあります。
+[MIT](LICENSE)
+
+次の 2 つのプロジェクト（いずれも MIT）を元にしています。元プロジェクトの著作権表示は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) にあります。
 
 - [gofile-dl](https://github.com/martadams89/gofile-dl)：URL からコンテンツ ID を取り出す処理
 - [GoFile Enhanced](https://github.com/ewigl/gofile-enhanced)：GoFile のページへの UI 追加の手法
-
-GoFile・JDownloader の公式ツールではありません。GoFile の利用規約を守ってお使いください。
