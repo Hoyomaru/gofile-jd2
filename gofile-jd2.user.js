@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GoFile → JD2
 // @namespace    gofile-jd2
-// @version      0.9.0
+// @version      0.9.1
 // @description  GoFile のページにツールバーを追加し、GoFile の URL を Click'n'Load で JDownloader 2 へ渡す。中身の取得とフォルダ構造の再現は JD2 の GoFile プラグインに任せる。
 // @author       Hoyomaru
 // @license      MIT
@@ -345,6 +345,9 @@
     }
     const res = await gmRequest('POST', `${jdBase()}/flashgot`, body.toString(), 60000);
     if (!res.ok || /^\s*failed/i.test(res.text)) throw new Error(res.text.trim() || `HTTP ${res.status}`);
+    // 送れたことをこのページに知らせる（gofile-tab-cleaner v0.7.0 以降が受け取り、次に開いたときに閉じる）。
+    //   message イベントはページとユーザースクリプトの両方に届くので、サンドボックスの window でよい。
+    window.postMessage({ source: 'gofile-jd2', type: 'sent', urls }, location.origin);
   }
 
   // ---------------------------------------------------------------------------

@@ -38,6 +38,8 @@ Tampermonkey / Violentmonkey が自動で更新します。インストール直
 
 送信中は「送信中…」と表示し、終わるまでは次の送信を受け付けません。
 
+[gofile-tab-cleaner](https://github.com/Hoyomaru/gofile-tab-cleaner) v0.7.0 以降と一緒に使うと、JD2 へ送ったコンテンツを次に開いたときに自動で閉じます（送れたときにページへ知らせを出し、gofile-tab-cleaner が受け取ります）。
+
 ### パスワード付きのフォルダ
 
 GoFile のページでパスワードを入れて開いたフォルダは、「このフォルダ全体」などで送るときに、そのパスワードも JD2 に渡します。JD2 でもう一度入れる必要はありません。
